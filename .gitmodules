@@ -1,0 +1,3 @@
+[submodule "BaseDetect"]
+	path = BaseDetect
+	url = https://github.com/jujinqian162/BaseDetect.git
