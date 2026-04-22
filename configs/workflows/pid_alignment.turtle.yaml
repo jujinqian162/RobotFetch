@@ -1,0 +1,19 @@
+pid_alignment_workflow:
+  environment: turtle
+  start_phase: STATUS_ALIGN
+  one_shot: true
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: /turtle1/cmd_vel
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
