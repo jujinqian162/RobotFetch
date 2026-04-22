@@ -78,18 +78,35 @@ RobotFetch/
 - 调用 `basedetect.coord3d.pixel_to_3d` 估计 3D 坐标
 - 以 ROS 2 话题发布 `/robot_fetch/target_position` (`geometry_msgs/msg/PointStamped`)
 
-## 运行方式
+## 环境准备
 
-先 source ROS 2 环境（以 Humble 为例）：
+推荐环境：
+
+- Ubuntu 24.04
+- ROS 2 Jazzy
+- `/usr/bin/python3.12`
+- 项目根目录 `.venv`，并使用 `--system-site-packages` 复用 ROS 的 Python 包
+
+不要直接用 `conda` 里的 `python3` 运行本项目。当前代码会在同一个解释器里同时导入 `rclpy` 和 `basedetect`，最稳的做法是统一到系统 Python 3.12。
+
+首次初始化：
 
 ```bash
-source /opt/ros/humble/setup.bash
+./scripts/setup_dev_env.sh
 ```
 
-然后在 `RobotFetch/` 下直接运行：
+之后每次进入项目，先激活环境：
 
 ```bash
-python3 src/base_detect_demo_node.py
+source ./scripts/activate_dev_env.sh
+```
+
+## 运行方式
+
+环境激活后，在 `RobotFetch/` 下直接运行：
+
+```bash
+python src/base_detect_demo_node.py
 ```
 
 查看发布结果：
@@ -120,13 +137,13 @@ ros2 topic echo /robot_fetch/target_position
 运行示例：
 
 ```bash
-python3 src/terminal_pid_follower_node.py
+python src/terminal_pid_follower_node.py
 ```
 
 热更新运行：
 
 ```bash
-python3 src/terminal_pid_follower_node.py --hot-reload
+python src/terminal_pid_follower_node.py --hot-reload
 ```
 
 配置文件中的关键项：
@@ -143,7 +160,7 @@ python3 src/terminal_pid_follower_node.py --hot-reload
 For partial testing of BaseDetect + PID lateral alignment, use:
 
 ```bash
-python3 src/runners/pid_alignment_runner.py --start-phase STATUS_ALIGN
+python src/runners/pid_alignment_runner.py --start-phase STATUS_ALIGN
 ```
 
 Workflow topics:
@@ -156,7 +173,7 @@ Workflow topics:
 For turtlesim-based workflow testing, run:
 
 ```bash
-python3 src/turtle_workflow_node.py
+python src/turtle_workflow_node.py
 ```
 
 This node:
@@ -170,7 +187,7 @@ It maps algorithm lateral `linear.y` into turtlesim forward/backward `linear.x`,
 Optional arguments:
 
 ```bash
-python3 src/turtle_workflow_node.py \
+python src/turtle_workflow_node.py \
   --phase-topic /workflow/phase \
   --cmd-topic /cmd_vel \
   --env-status-topic /workflow/env_status \
@@ -180,8 +197,16 @@ python3 src/turtle_workflow_node.py \
 
 
 ```bash
-python3 src/base_detect_demo_node.py \
+python src/base_detect_demo_node.py \
   --camera-config BaseDetect/configs/camera.yaml \
   --bbox-cx 320 --bbox-cy 240 --bbox-width 120 --bbox-height 90 \
   --frame-id camera_link --hz 2.0
+```
+
+## 测试
+
+根仓库测试只收集 `tests/` 目录，避免误把 `BaseDetect/scripts/` 下依赖重型推理栈的脚本当成 RobotFetch 单测。
+
+```bash
+python -m pytest -q
 ```

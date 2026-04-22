@@ -5,3 +5,4 @@ log/
 opencode.json
 __pycache__/
 *.py[cod]
+.venv/
