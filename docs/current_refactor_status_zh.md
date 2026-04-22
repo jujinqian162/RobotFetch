@@ -21,7 +21,7 @@
 - status 对齐算法模块
 - detector gateway
 - status-only runner core
-- turtle workflow 同步 adapter stub
+- turtle workflow sync + turtle ROS bridge
 
 也就是说，现在代码已经具备了以下最小闭环：
 
@@ -29,7 +29,7 @@
 - 用 `DetectorGateway` 从 BaseDetect SDK 取 status targets
 - 用 `StatusAlignStep` 根据目标位置输出横向控制量
 - 用 `PidAlignmentRunnerNode` 串起 detector + status_align + workflow topic 发布
-- 用 `TurtleAdapter` 消费 workflow phase，并把环境侧状态同步成 `env_status`
+- 用 `TurtleWorkflowNode` 订阅 `/workflow/phase` 和 `/cmd_vel`，同步 `env_status` 并驱动 turtlesim
 
 但是要明确：
 
@@ -38,8 +38,9 @@
 特别是：
 
 - `src/runners/pid_alignment_runner.py` 现在还是一个**轻量 runner core**，不是完整的 `rclpy.Node` 成品。
-- 测试中发布的消息目前是简化的字符串 / dict 形态，不是真正的 ROS msg 对象。
-- turtle adapter 目前只是 **workflow/env_status 同步层**，还**没有接 `/cmd_vel`**，也没有驱动 turtlesim 真正运动。
+- 测试中的 runner 发布消息目前还是简化的字符串 / dict 形态，不是真正的 ROS msg 对象。
+- `src/turtle_workflow_node.py` 已经是一个可直接脚本运行的 `rclpy.Node`，能接 `/workflow/phase` 和 `/cmd_vel`，并把算法侧横移命令映射为 turtlesim 的前进/后退。
+- turtle 侧目前完成的是 **workflow/env_status 同步 + `/cmd_vel` 到 turtlesim `/turtle1/cmd_vel` 的桥接**，还没有位置/姿态反馈闭环，也没有模拟真实底盘约束。
 - forward approach / base_coord full mission / robot adapter 都还没有进入这一轮实现范围。
 
 所以可以把当前状态理解为：
@@ -232,35 +233,52 @@
 
 ---
 
-### 3.4 TurtleAdapter
+### 3.4 TurtleAdapter + TurtleWorkflowNode
 
-定义在：
+纯逻辑 adapter 定义在：
 - `src/adapters/turtle_adapter.py`
 
-当前它是一个非常薄的环境侧同步器：
+真实 ROS bridge node 定义在：
+- `src/turtle_workflow_node.py`
 
-- 输入：`phase`
-- 输出：`env_status`
+现在 turtle 侧拆成两层：
+
+1. `TurtleAdapter`
+   - 负责纯逻辑映射
+   - `phase -> env_status`
+   - 算法侧 `cmd_vel.linear_y -> turtle linear_x`
+
+2. `TurtleWorkflowNode`
+   - 负责真实 `rclpy.Node` 接线
+   - 订阅：
+     - `/workflow/phase`
+     - `/cmd_vel`
+   - 发布：
+     - `/workflow/env_status`
+     - `/turtle1/cmd_vel`
 
 当前逻辑：
 
 - `STATUS_ALIGN -> EnvStatus.READY`
 - 其他 phase -> `EnvStatus.IDLE`
+- 算法侧横移命令 `linear_y` 被解释为 turtlesim 的前进/后退 `linear_x`
+- `angular_z` 透传给 turtlesim
 
 也就是说它现在完成的是：
 
-> 环境侧能够“知道现在 workflow 正在要求它准备进入 status 对齐阶段”。
+> 环境侧不仅能知道 workflow 正在要求它进入 status 对齐阶段，
+> 还能把算法侧横移控制命令桥接到 turtlesim 真正运动起来。
 
 它**还没有**：
 
-- 消费 `/cmd_vel`
-- 驱动 turtlesim 运动
-- 发布位置/姿态反馈
+- 发布位置/姿态反馈给 workflow
+- 建立真实运动闭环
 - 模拟真实底盘约束
+- 自动把 turtle 调整到固定“侧身”初始姿态
 
 所以当前 turtle 进度是：
 
-> **workflow 同步准备好了，运动仿真还没做。**
+> **workflow 同步和基础运动桥接已经准备好，但还不是完整仿真闭环。**
 
 ---
 
@@ -268,7 +286,7 @@
 
 这轮 verification pass 已执行，结果：
 
-- 共 `31 passed`
+- 共 `33 passed`
 
 覆盖文件：
 
@@ -280,6 +298,7 @@
 - `tests/test_detector_gateway.py`
 - `tests/test_pid_alignment_runner.py`
 - `tests/test_turtle_adapter.py`
+- `tests/test_turtle_workflow_node.py`
 
 下面按模块说测试测了什么。
 
@@ -377,16 +396,19 @@
 
 ---
 
-### 4.8 turtle adapter
+### 4.8 turtle adapter / turtle workflow node
 
 测了：
 
 - phase 到 env_status 的映射
 - adapter 是否会发布 env_status
-- node 包装层是否能把 phase message 转交给 adapter
+- adapter 是否会把算法侧 `linear_y` 映射成 turtle `linear_x`
+- adapter node 包装层是否能转交 phase 和 cmd_vel
+- `TurtleWorkflowNode` 收到 `String/Twist` 后，是否会发布正确的 `String/Twist` 消息
 
 意义：
 - 保证环境侧 workflow 同步接口已经建好
+- 保证 turtle bridge 的核心消息转换逻辑已经建好
 
 ---
 
@@ -412,18 +434,23 @@
 
 ---
 
-### 5.2 没测真实 ROS publisher / subscriber / msg 类型
+### 5.2 没测完整 ROS publisher / subscriber / msg 集成链路
 
-当前 runner/turtle adapter 测试主要是逻辑级测试，不是完整 ROS 集成测试。
+当前新增了 `src/turtle_workflow_node.py`，并对它的消息转换逻辑做了轻量测试，
+但这仍然不是完整 ROS 集成测试。
 
 没测的包括：
 
-- `rclpy.Node` 生命周期
-- `String / Twist / PointStamped` 真实消息对象
-- 真正的 topic publish / subscribe
-- ROS clock / timer
+- `rclpy.Node` 生命周期在真实运行中的行为
+- 真正的 topic publish / subscribe 连通
+- ROS clock / executor / spin
+- turtlesim 是否按预期运动
+- 多节点一起启动时的 topic 对齐
 
-所以当前还不能说“ROS 节点联通已经测过”，只能说“节点逻辑 core 已测过”。
+所以当前可以说：
+
+- turtle workflow node 的核心消息转换逻辑测了
+- 但“真实 ROS 联通 + turtlesim 实际响应”还没自动化验证
 
 ---
 
@@ -632,17 +659,38 @@ python3 src/runners/pid_alignment_runner.py --start-phase STATUS_ALIGN
 
 ### 8.3 当前 turtle 启动方式
 
-当前没有完整 turtle 启动脚本。
+当前 turtle 部分已经有完整的脚本入口：
+- `src/turtle_workflow_node.py`
 
-现阶段 turtle 部分只有：
-- `src/adapters/turtle_adapter.py`
+启动方式：
 
-所以你现在**不能**说“turtle 仿真环境已经准备完毕”。
+```bash
+python3 src/turtle_workflow_node.py
+```
 
-更准确的描述是：
+可选参数：
 
-- workflow/env_status 同步 contract 已经准备好
-- 真正的 turtle 运动仿真还没接
+```bash
+python3 src/turtle_workflow_node.py \
+  --phase-topic /workflow/phase \
+  --cmd-topic /cmd_vel \
+  --env-status-topic /workflow/env_status \
+  --turtle-cmd-topic /turtle1/cmd_vel \
+  --node-name turtle_workflow_node
+```
+
+它当前负责：
+
+- 订阅 `/workflow/phase`
+- 订阅算法侧 `/cmd_vel`
+- 发布 `/workflow/env_status`
+- 发布 turtlesim `/turtle1/cmd_vel`
+
+你需要注意：
+
+- 它是一个 **turtle workflow bridge node**，不是完整比赛 runner
+- 它解决的是“workflow 同步 + turtle 基础运动桥接”
+- 它还没有 pose feedback、闭环控制和真实底盘约束模拟
 
 ---
 
@@ -657,16 +705,16 @@ python3 src/runners/pid_alignment_runner.py --start-phase STATUS_ALIGN
 - status 对齐模块
 - detector gateway
 - status-only runner core
-- turtle env_status 同步 stub
+- turtle 纯逻辑 adapter
+- turtle workflow ROS bridge node
 - README 基础说明
 - 自动化测试验证 pass
 
 ### 未完成
 
 - 真实 `rclpy.Node` 版本的 `pid_alignment_runner`
-- 真实 ROS msg 发布/订阅接线
 - 摄像头输入接线
-- `/cmd_vel` 到 turtle 的消费与运动仿真
+- turtle pose feedback / 闭环仿真
 - 真机 adapter
 - forward approach
 - base_coord runner / full mission runner
@@ -674,7 +722,8 @@ python3 src/runners/pid_alignment_runner.py --start-phase STATUS_ALIGN
 
 ### 对 turtle 当前状态的准确描述
 
-> 现在 turtle 只完成了“环境状态同步层”，还没有完成“运动仿真层”。
+> 现在 turtle 已经完成了“workflow 同步层 + 基础运动桥接层”，
+> 但还没有完成“位置反馈闭环和真实底盘约束模拟层”。
 
 ### 对整个项目当前状态的准确描述
 
