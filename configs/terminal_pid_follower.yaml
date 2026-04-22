@@ -1,0 +1,50 @@
+terminal_pid_follower:
+  sdk:
+    config: BaseDetect/configs/basedetect_sdk.yaml
+
+  input:
+    source: "0"
+
+  runtime:
+    hz: 15.0
+    log_every: 5
+
+  topics:
+    cmd_vel: /cmd_vel
+    selected_status_target: /robot_fetch/selected_target_px
+    selected_base_coord: /robot_fetch/target_position
+    frame_id: camera_link
+
+  modes:
+    status_profile: status_competition
+    base_coord_profile: base_coord_competition
+
+  status_align:
+    labels: [spearhead, fist, palm]
+    target_x: 320.0
+    x_tolerance: 8.0
+    require_ready: true
+    use_stable_labels: true
+    control_axis: linear_y
+    control_sign: -1.0
+
+  pid:
+    kp: 0.006
+    ki: 0.0
+    kd: 0.0008
+    max_speed: 0.25
+    integral_limit: 1000.0
+    deadband: 0.0
+    derivative_alpha: 0.35
+
+  safety:
+    stop_on_lost: true
+
+  forward_approach:
+    enabled: false
+    distance_m: 0.20
+
+  base_coord:
+    target_x: 320.0
+    labels: []
+    require_ready: true
