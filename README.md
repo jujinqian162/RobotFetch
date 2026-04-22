@@ -2,6 +2,65 @@
 
 简化版 ROS 2 示例工程，不用 colcon 构建，直接运行 `src` 里的 Python 脚本。
 
+## 项目背景与目标
+
+这个项目要解决的问题是：**让机器人走到端头架前的目标端头附近，并为后续机械臂操作提供可靠的定位信息。**
+
+当前整体任务可以理解成一条分阶段的链路：
+
+1. 机器人先走到一个固定的观察位姿，保证摄像头能完整看到端头架
+2. `BaseDetect` 在 `status` 模式下输出当前画面里的端头目标
+3. 控制侧从这些目标里选择“最该跟踪的那个目标”，通常是最接近目标像素列的端头
+4. PID 控制机器人做左右平移，对齐到目标端头前方
+5. 对齐完成后，机器人前移固定距离
+6. 然后切到 `base_coord` 模式，输出目标 base 的 3D 坐标，提供给后续机械臂或更高层任务
+
+也就是说，这个项目并不是单纯做“检测”或“PID”某一项，而是把：
+
+- 视觉检测
+- 目标选择
+- 横向对齐控制
+- workflow 状态同步
+- 仿真/真实环境适配
+
+串成一套可测试、可分阶段启动的机器人执行流程。
+
+## 为什么现在会拆成 workflow 架构
+
+这个项目当前最重要的工程背景是：**你并不总是拥有完整比赛环境。**
+
+实际开发里至少有三种场景：
+
+1. 只想验证 `BaseDetect + PID` 这条最核心链路
+2. 没有真实机器人时，要先用 turtlesim 验证控制不会发散、workflow 能不能串起来
+3. 真正比赛或实机联调时，再接入完整机器人环境
+
+所以现在代码会强调：
+
+- 算法模块和环境模块解耦
+- 用统一的 `Phase / AlgoStatus / EnvStatus` 表达状态
+- 支持从任意 phase 启动部分测试
+- 让 turtle 和真实机器人都通过 ROS topic 接入同一个 workflow contract
+
+这样做的目的不是把项目做复杂，而是为了让“部分功能测试”和“完整比赛流程”能共存，不至于为了临时测试写出一堆最后无法合并回主链路的脚本。
+
+## 当前核心流程
+
+目前已经拆出来的最小闭环是：
+
+1. runner 进入 `STATUS_ALIGN`
+2. `DetectorGateway` 从 BaseDetect 读取 status targets
+3. `StatusAlignStep` 选择目标并输出 PID 横向控制量
+4. runner 发布：
+   - `/workflow/phase`
+   - `/workflow/algo_status`
+   - `/workflow/env_status`
+   - `/cmd_vel`
+5. `TurtleWorkflowNode` 或后续真实环境 adapter 消费这些 topic
+6. turtle 环境把算法侧 `linear.y` 映射为 turtlesim 的 `linear.x`，用于验证 PID 和 workflow 同步
+
+所以当前 README 里提到的 runner、turtle bridge、BaseDetect，并不是互相独立的小脚本，而是在服务同一条机器人任务链路。
+
 ## 目录结构
 
 ```text
