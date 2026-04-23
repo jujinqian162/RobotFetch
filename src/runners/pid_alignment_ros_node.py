@@ -13,6 +13,7 @@ from std_msgs.msg import String
 
 WORKTREE_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = WORKTREE_ROOT / "src"
+DEFAULT_CONFIG_PATH = WORKTREE_ROOT / "configs/workflows/pid_alignment.robot.yaml"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -163,7 +164,7 @@ class PidAlignmentRosNode(Node):
 
         self._adapter = build_adapter(
             environment=cfg.environment,
-            env_status_publisher=self._env_status_pub.publish,
+            env_status_publisher=lambda _: None,
         )
         self._gateway = DetectorGateway(
             config_path=cfg.detector.sdk_config,
@@ -224,7 +225,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the PID alignment workflow node")
     parser.add_argument(
         "--config",
-        default="configs/workflows/pid_alignment.robot.yaml",
+        default=str(DEFAULT_CONFIG_PATH),
     )
     return parser.parse_args(argv)
 
