@@ -117,43 +117,21 @@ ros2 topic echo /robot_fetch/target_position
 
 ## PID 跟踪最近端头（status 模式）
 
-`src/terminal_pid_follower_node.py` 使用 BaseDetect SDK 的双阶段流程：
+旧的 `src/terminal_pid_follower_node.py` 记录的是重构前的单节点实验路径，不再作为当前架构的启动方式。
+当前 refactored workflow 的启动入口是下面的 runner-based flow：`src/runners/pid_alignment_ros_node.py --config ...`。
+
+这个 runner 仍然覆盖 status 模式下的核心链路：
 
 1. `status` 模式：按 `|cx - target_x|` 最小选择目标，PID 仅做横向对齐。
-2. 对齐后预留“前移固定距离”TODO（当前只打印日志并跳过实现）。
-3. 切到 `base_coord` 模式：从检测到的 base 中取 `|cx - target_x|` 最小的目标，
-   广播其 3D 坐标给机械臂。
+2. one-shot 行为由 workflow YAML 中的 `one_shot` 控制。
+3. 前移阶段没有放进这个 MVP runner，后续由 full mission runner 接管。
 
-全部参数放在 `configs/terminal_pid_follower.yaml`，命令行只保留 `--hot-reload`。
-开启后每个循环重读 YAML，实时更新 PID、target_x、profile 等参数。
-节点状态流转：`status_align -> forward_approach_todo -> base_coord_broadcast`。
-
-默认行为：
-
-- 发布速度到 `/cmd_vel`（`geometry_msgs/msg/Twist`）
-- 发布当前选中的像素目标到 `/robot_fetch/selected_target_px`（`geometry_msgs/msg/PointStamped`）
-- 目标丢失时自动停车
-
-运行示例：
-
-```bash
-python src/terminal_pid_follower_node.py
-```
-
-热更新运行：
-
-```bash
-python src/terminal_pid_follower_node.py --hot-reload
-```
-
-配置文件中的关键项：
+当前部分验证的关键配置项在 workflow YAML 中：
 
 - `status_align.target_x`：状态模式下对齐目标像素 x
-- `status_align.labels`：允许的端头类别
-- `pid.*`：PID 参数和限幅
-- `modes.status_profile` / `modes.base_coord_profile`：SDK 两个阶段 profile
-- `base_coord.target_x`：base_coord 广播阶段的目标像素 x
-- `forward_approach.*`：前移阶段预留参数（TODO，暂未执行）
+- `detector.status_profile`：status 检测 profile
+- `topics.selected_status_topic`：当前选中目标像素话题
+- `adapter.turtle_cmd_topic`：turtle 环境下的适配输出话题
 
 ## Runner-Based Workflow Startup
 

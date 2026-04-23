@@ -226,6 +226,8 @@ def test_readme_mentions_pid_alignment_runner_startup():
     readme = Path("README.md").read_text(encoding="utf-8")
 
     assert "python src/runners/pid_alignment_ros_node.py --config" in readme
+    assert "python src/terminal_pid_follower_node.py" not in readme
+    assert "python src/terminal_pid_follower_node.py --hot-reload" not in readme
 
 
 def test_main_loads_config_and_spins_node(monkeypatch):
