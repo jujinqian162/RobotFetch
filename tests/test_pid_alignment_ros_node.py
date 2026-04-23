@@ -201,9 +201,10 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
         lambda cfg: SimpleNamespace(cfg=cfg),
     )
 
-    def fake_build_adapter(*, environment, env_status_publisher):
+    def fake_build_adapter(*, environment, env_status_publisher, turtle_cmd_publisher=None):
         captured["environment"] = environment
         captured["env_status_publisher"] = env_status_publisher
+        captured["turtle_cmd_publisher"] = turtle_cmd_publisher
         return SimpleNamespace(on_phase=lambda phase: None)
 
     monkeypatch.setattr(fake_ros_node, "build_adapter", fake_build_adapter)
@@ -212,6 +213,78 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
     captured["env_status_publisher"]("READY")
 
     assert node.env_status_pub._ros_publisher.messages == []
+    assert captured["turtle_cmd_publisher"] is None
+
+
+def test_pid_alignment_ros_node_bridges_runner_cmd_to_turtle_topic(monkeypatch):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+    publishers: dict[str, object] = {}
+
+    class FakeRosPublisher:
+        def __init__(self, topic: str) -> None:
+            self.topic = topic
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    class FakeCapture:
+        def read(self):
+            return False, None
+
+        def release(self) -> None:
+            return None
+
+    def fake_create_publisher(self, msg_type, topic, qos_depth):
+        publisher = FakeRosPublisher(topic)
+        publishers[topic] = publisher
+        return publisher
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        fake_create_publisher,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_timer",
+        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        raising=False,
+    )
+    monkeypatch.setattr(fake_ros_node, "build_capture", lambda input_source: FakeCapture())
+    monkeypatch.setattr(
+        fake_ros_node,
+        "DetectorGateway",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        fake_ros_node,
+        "build_status_align_step",
+        lambda cfg: SimpleNamespace(cfg=cfg),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(cfg=make_cfg(environment="turtle"))
+    node.cmd_pub.publish(
+        {
+            "linear_x": 0.0,
+            "linear_y": 0.18,
+            "angular_z": 0.25,
+        }
+    )
+
+    raw_messages = publishers["/cmd_vel"].messages
+    turtle_messages = publishers["/turtle1/cmd_vel"].messages
+
+    assert len(raw_messages) == 1
+    assert raw_messages[0].linear.x == 0.0
+    assert raw_messages[0].linear.y == 0.18
+    assert raw_messages[0].angular.z == 0.25
+
+    assert len(turtle_messages) == 1
+    assert turtle_messages[0].linear.x == 0.18
+    assert turtle_messages[0].linear.y == 0.0
+    assert turtle_messages[0].angular.z == 0.25
 
 
 def test_parse_args_defaults_config_path_from_worktree_root():

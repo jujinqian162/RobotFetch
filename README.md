@@ -131,7 +131,7 @@ ros2 topic echo /robot_fetch/target_position
 - `status_align.target_x`：状态模式下对齐目标像素 x
 - `detector.status_profile`：status 检测 profile
 - `topics.selected_status_topic`：当前选中目标像素话题
-- `adapter.turtle_cmd_topic`：turtle 环境下的适配输出话题
+- `adapter.turtle_cmd_topic`：`environment: turtle` 时，将 runner 的 `/cmd_vel` 输出桥接为 turtlesim 可执行的速度话题
 
 ## Runner-Based Workflow Startup
 
@@ -140,6 +140,8 @@ Turtle partial test:
 ```bash
 python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alignment.turtle.yaml
 ```
+
+This uses the same runner startup path as the robot config. In turtle mode, the node still publishes the workflow `/cmd_vel` message and also bridges it to `adapter.turtle_cmd_topic` so turtlesim can move without a separate bridge process.
 
 Real robot partial test:
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import rclpy
@@ -54,6 +55,29 @@ class _TwistPublisher:
         self._ros_publisher.publish(message)
 
 
+class _WorkflowCommandPublisher:
+    def __init__(
+        self,
+        *,
+        ros_publisher: Any,
+        message_type: type[Twist],
+        adapter_cmd_handler: Callable[[Any], Any] | None = None,
+    ) -> None:
+        self._ros_publisher = ros_publisher
+        self._message_type = message_type
+        self._adapter_cmd_handler = adapter_cmd_handler
+        self._workflow_publisher = _TwistPublisher(
+            ros_publisher=ros_publisher,
+            message_type=message_type,
+        )
+
+    def publish(self, payload: dict[str, float]) -> None:
+        self._workflow_publisher.publish(payload)
+        if self._adapter_cmd_handler is None:
+            return
+        self._adapter_cmd_handler(_build_twist_message(payload))
+
+
 class _SelectedTargetPublisher:
     def __init__(
         self,
@@ -79,9 +103,32 @@ class _SelectedTargetPublisher:
         self._ros_publisher.publish(message)
 
 
-def build_adapter(*, environment: str, env_status_publisher: Callable[[str], None]) -> Any:
+def _build_twist_message(payload: dict[str, float]) -> Any:
+    return SimpleNamespace(
+        linear=SimpleNamespace(
+            x=float(payload.get("linear_x", 0.0)),
+            y=float(payload.get("linear_y", 0.0)),
+            z=0.0,
+        ),
+        angular=SimpleNamespace(
+            x=0.0,
+            y=0.0,
+            z=float(payload.get("angular_z", 0.0)),
+        ),
+    )
+
+
+def build_adapter(
+    *,
+    environment: str,
+    env_status_publisher: Callable[[str], None],
+    turtle_cmd_publisher: Callable[[dict[str, float]], None] | None = None,
+) -> Any:
     if environment == "turtle":
-        return TurtleAdapter(env_status_publisher=env_status_publisher)
+        return TurtleAdapter(
+            env_status_publisher=env_status_publisher,
+            turtle_cmd_publisher=turtle_cmd_publisher,
+        )
     if environment == "robot":
         return RobotAdapter(env_status_publisher=env_status_publisher)
     raise ValueError(f"Unsupported environment: {environment}")
@@ -138,10 +185,13 @@ class PidAlignmentRosNode(Node):
             one_shot=cfg.one_shot,
         )
 
-        self._cmd_pub = _TwistPublisher(
-            ros_publisher=self.create_publisher(Twist, cfg.topics.cmd_topic, 10),
-            message_type=Twist,
-        )
+        workflow_cmd_ros_publisher = self.create_publisher(Twist, cfg.topics.cmd_topic, 10)
+        turtle_cmd_publisher: Callable[[dict[str, float]], None] | None = None
+        if cfg.environment == "turtle" and cfg.adapter.turtle_cmd_topic:
+            turtle_cmd_publisher = _TwistPublisher(
+                ros_publisher=self.create_publisher(Twist, cfg.adapter.turtle_cmd_topic, 10),
+                message_type=Twist,
+            ).publish
         self._phase_pub = _StringPublisher(
             ros_publisher=self.create_publisher(String, cfg.topics.workflow_phase_topic, 10),
             message_type=String,
@@ -165,6 +215,14 @@ class PidAlignmentRosNode(Node):
         self._adapter = build_adapter(
             environment=cfg.environment,
             env_status_publisher=lambda _: None,
+            turtle_cmd_publisher=turtle_cmd_publisher,
+        )
+        self._cmd_pub = _WorkflowCommandPublisher(
+            ros_publisher=workflow_cmd_ros_publisher,
+            message_type=Twist,
+            adapter_cmd_handler=(
+                self._adapter.on_cmd_vel if cfg.environment == "turtle" else None
+            ),
         )
         self._gateway = DetectorGateway(
             config_path=cfg.detector.sdk_config,
