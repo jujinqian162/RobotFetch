@@ -32,7 +32,7 @@ def load_pid_alignment_config(
 
     return PidAlignmentWorkflowConfig(
         environment=_require_str_field(root, "environment", parent="pid_alignment_workflow"),
-        start_phase=_require_optional_str_field(
+        start_phase=_require_defaulted_str_field(
             root,
             "start_phase",
             default="STATUS_ALIGN",
@@ -144,6 +144,17 @@ def _require_optional_str_field(
         return None
     if not isinstance(value, str):
         raise TypeError(f"{parent}.{key} must be a string or null")
+    return value
+
+
+def _require_defaulted_str_field(
+    mapping: dict[str, Any], key: str, *, default: str, parent: str
+) -> str:
+    if key not in mapping:
+        return default
+    value = mapping[key]
+    if not isinstance(value, str):
+        raise TypeError(f"{parent}.{key} must be a string")
     return value
 
 
