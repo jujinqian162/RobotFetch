@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Callable
 
 from workflow.types import EnvStatus, Phase, parse_phase
 
+from .base import AdapterCommand
 
-@dataclass(frozen=True)
-class TurtleVelocityCommand:
-    linear_x: float
-    angular_z: float
+TurtleVelocityCommand = AdapterCommand
 
 
 def update_env_status_from_phase(phase: Phase | str) -> EnvStatus:
@@ -19,9 +16,10 @@ def update_env_status_from_phase(phase: Phase | str) -> EnvStatus:
     return EnvStatus.IDLE
 
 
-def map_cmd_vel_to_turtle_command(cmd_vel: Any) -> TurtleVelocityCommand:
-    return TurtleVelocityCommand(
+def map_cmd_vel_to_turtle_command(cmd_vel: Any) -> AdapterCommand:
+    return AdapterCommand(
         linear_x=float(cmd_vel.linear.y),
+        linear_y=0.0,
         angular_z=float(cmd_vel.angular.z),
     )
 
@@ -46,7 +44,7 @@ class TurtleAdapter:
         self._env_status_publisher(self._current_env_status.value)
         return self._current_env_status
 
-    def on_cmd_vel(self, cmd_vel: Any) -> TurtleVelocityCommand:
+    def on_cmd_vel(self, cmd_vel: Any) -> AdapterCommand:
         command = map_cmd_vel_to_turtle_command(cmd_vel)
         if self._turtle_cmd_publisher is not None:
             self._turtle_cmd_publisher(
@@ -62,5 +60,5 @@ class TurtleAdapterNode:
     def on_phase_message(self, phase_value: str) -> EnvStatus:
         return self._adapter.on_phase(phase_value)
 
-    def on_cmd_vel_message(self, cmd_vel: Any) -> TurtleVelocityCommand:
+    def on_cmd_vel_message(self, cmd_vel: Any) -> AdapterCommand:
         return self._adapter.on_cmd_vel(cmd_vel)
