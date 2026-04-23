@@ -27,6 +27,7 @@ class RunnerConfig:
     algo_status_topic: str
     env_status_topic: str
     frame_id: str
+    one_shot: bool = False
 
 
 @dataclass(frozen=True)
@@ -120,14 +121,15 @@ class PidAlignmentRunnerNode:
     def selected_target_pub(self) -> Any:
         return self._selected_target_pub
 
-    def run_once(self, *, frame: Any) -> None:
+    def run_once(self, *, frame: Any) -> StatusAlignCycleResult:
         self._phase_controller.enter_phase(Phase.STATUS_ALIGN)
-        run_status_align_once(
+        return run_status_align_once(
             node=self,
             frame=frame,
             detector_gateway=self._detector_gateway,
             status_align_step=self._status_align_step,
             cfg=self._runner_cfg,
+            one_shot=self._runner_cfg.one_shot,
         )
 
 
@@ -168,4 +170,5 @@ def build_default_runner_config() -> RunnerConfig:
         algo_status_topic="/workflow/algo_status",
         env_status_topic="/workflow/env_status",
         frame_id="camera_link",
+        one_shot=False,
     )

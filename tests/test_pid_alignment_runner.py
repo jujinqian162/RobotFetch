@@ -82,6 +82,7 @@ DEFAULT_CONFIG = RunnerConfig(
     algo_status_topic="/workflow/algo_status",
     env_status_topic="/workflow/env_status",
     frame_id="camera_link",
+    one_shot=False,
 )
 
 
@@ -179,8 +180,56 @@ def test_pid_alignment_runner_node_reports_running_publishers():
     node._runner_cfg = DEFAULT_CONFIG
     node._phase_controller = SimpleNamespace(enter_phase=lambda phase: phase)
 
-    node.run_once(frame=object())
+    cycle = node.run_once(frame=object())
 
+    assert cycle.phase == Phase.STATUS_ALIGN.value
+    assert cycle.algo_status == AlgoStatus.RUNNING.value
+    assert cycle.env_status == EnvStatus.RUNNING.value
+    assert cycle.command_x == -0.1
+    assert cycle.stop_requested is False
     assert node._phase_pub.messages == [Phase.STATUS_ALIGN.value]
     assert node._algo_status_pub.messages == [AlgoStatus.RUNNING.value]
     assert node._env_status_pub.messages == [EnvStatus.RUNNING.value]
+
+
+def test_pid_alignment_runner_node_propagates_one_shot_stop_request():
+    node = PidAlignmentRunnerNode.__new__(PidAlignmentRunnerNode)
+    node._cmd_pub = FakePublisher()
+    node._phase_pub = FakePublisher()
+    node._algo_status_pub = FakePublisher()
+    node._env_status_pub = FakePublisher()
+    node._selected_target_pub = FakePublisher()
+    node._frame_id = "camera_link"
+    node.get_clock = lambda: FakeClock(4.0)
+
+    target = FakeStatusTarget(label="palm", cx=320.0)
+    detector = FakeDetectorGateway(FakeDetectionBatch(ready=True, targets=[target]))
+    step = FakeStatusAlignStep(
+        FakeStatusAlignResult(
+            status=AlgoStatus.ALIGNED,
+            command_x=0.0,
+            selected_target=target,
+            aligned=True,
+        )
+    )
+
+    node._detector_gateway = detector
+    node._status_align_step = step
+    node._runner_cfg = RunnerConfig(
+        cmd_topic="/cmd_vel",
+        selected_status_topic="/robot_fetch/selected_target_px",
+        workflow_phase_topic="/workflow/phase",
+        algo_status_topic="/workflow/algo_status",
+        env_status_topic="/workflow/env_status",
+        frame_id="camera_link",
+        one_shot=True,
+    )
+    node._phase_controller = SimpleNamespace(enter_phase=lambda phase: phase)
+
+    cycle = node.run_once(frame=object())
+
+    assert cycle.phase == Phase.STATUS_ALIGN.value
+    assert cycle.algo_status == AlgoStatus.ALIGNED.value
+    assert cycle.env_status == EnvStatus.RUNNING.value
+    assert cycle.command_x == 0.0
+    assert cycle.stop_requested is True
