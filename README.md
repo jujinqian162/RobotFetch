@@ -155,45 +155,22 @@ python src/terminal_pid_follower_node.py --hot-reload
 - `base_coord.target_x`：base_coord 广播阶段的目标像素 x
 - `forward_approach.*`：前移阶段预留参数（TODO，暂未执行）
 
-## Status-only workflow runner
+## Runner-Based Workflow Startup
 
-For partial testing of BaseDetect + PID lateral alignment, use:
-
-```bash
-python src/runners/pid_alignment_runner.py --start-phase STATUS_ALIGN
-```
-
-Workflow topics:
-- `/workflow/phase`
-- `/workflow/algo_status`
-- `/workflow/env_status`
-
-## Turtle workflow bridge node
-
-For turtlesim-based workflow testing, run:
+Turtle partial test:
 
 ```bash
-python src/turtle_workflow_node.py
+python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alignment.turtle.yaml
 ```
 
-This node:
-- subscribes to `/workflow/phase`
-- subscribes to `/cmd_vel`
-- publishes `/workflow/env_status`
-- publishes mapped turtle motion to `/turtle1/cmd_vel`
-
-It maps algorithm lateral `linear.y` into turtlesim forward/backward `linear.x`, so you can validate PID behavior and workflow synchronization without a holonomic simulator.
-
-Optional arguments:
+Real robot partial test:
 
 ```bash
-python src/turtle_workflow_node.py \
-  --phase-topic /workflow/phase \
-  --cmd-topic /cmd_vel \
-  --env-status-topic /workflow/env_status \
-  --turtle-cmd-topic /turtle1/cmd_vel \
-  --node-name turtle_workflow_node
+python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alignment.robot.yaml
 ```
+
+One-shot mode is controlled in YAML with `one_shot: true`.
+Forward motion is deferred to the full mission runner and is not part of this MVP runner.
 
 
 ```bash

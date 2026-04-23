@@ -222,6 +222,12 @@ def test_parse_args_defaults_config_path_from_worktree_root():
     )
 
 
+def test_readme_mentions_pid_alignment_runner_startup():
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "python src/runners/pid_alignment_ros_node.py --config" in readme
+
+
 def test_main_loads_config_and_spins_node(monkeypatch):
     calls: list[tuple[str, object]] = []
     fake_cfg = make_cfg(environment="robot")
