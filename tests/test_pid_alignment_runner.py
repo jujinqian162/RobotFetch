@@ -99,7 +99,7 @@ def test_run_status_align_once_publishes_running_command_and_statuses():
         )
     )
 
-    run_status_align_once(
+    cycle = run_status_align_once(
         node=harness,
         frame=object(),
         detector_gateway=detector,
@@ -107,6 +107,11 @@ def test_run_status_align_once_publishes_running_command_and_statuses():
         cfg=DEFAULT_CONFIG,
     )
 
+    assert cycle.phase == Phase.STATUS_ALIGN.value
+    assert cycle.algo_status == AlgoStatus.RUNNING.value
+    assert cycle.env_status == EnvStatus.RUNNING.value
+    assert cycle.command_x == 0.2
+    assert cycle.stop_requested is False
     assert harness.phase_pub.messages == [Phase.STATUS_ALIGN.value]
     assert harness.algo_status_pub.messages == [AlgoStatus.RUNNING.value]
     assert harness.env_status_pub.messages == [EnvStatus.RUNNING.value]
@@ -127,7 +132,7 @@ def test_run_status_align_once_publishes_ready_env_status_when_detector_not_read
         )
     )
 
-    run_status_align_once(
+    cycle = run_status_align_once(
         node=harness,
         frame=object(),
         detector_gateway=detector,
@@ -135,6 +140,11 @@ def test_run_status_align_once_publishes_ready_env_status_when_detector_not_read
         cfg=DEFAULT_CONFIG,
     )
 
+    assert cycle.phase == Phase.STATUS_ALIGN.value
+    assert cycle.algo_status == AlgoStatus.TARGET_LOST.value
+    assert cycle.env_status == EnvStatus.READY.value
+    assert cycle.command_x == 0.0
+    assert cycle.stop_requested is False
     assert harness.phase_pub.messages == [Phase.STATUS_ALIGN.value]
     assert harness.algo_status_pub.messages == [AlgoStatus.TARGET_LOST.value]
     assert harness.env_status_pub.messages == [EnvStatus.READY.value]

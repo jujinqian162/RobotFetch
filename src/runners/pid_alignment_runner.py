@@ -29,6 +29,21 @@ class RunnerConfig:
     frame_id: str
 
 
+@dataclass(frozen=True)
+class StatusAlignCycleResult:
+    phase: str
+    algo_status: str
+    env_status: str
+    command_x: float
+    stop_requested: bool
+
+
+def should_stop_after_status_align(*, one_shot: bool, algo_status: AlgoStatus) -> bool:
+    if not one_shot:
+        return False
+    return algo_status in {AlgoStatus.ALIGNED, AlgoStatus.TARGET_LOST, AlgoStatus.ERROR}
+
+
 def run_status_align_once(
     *,
     node: Any,
@@ -36,17 +51,17 @@ def run_status_align_once(
     detector_gateway: Any,
     status_align_step: Any,
     cfg: RunnerConfig,
-) -> None:
+    one_shot: bool = False,
+) -> StatusAlignCycleResult:
     detection = detector_gateway.detect_status_targets(frame)
     now_s = node.get_clock().now().nanoseconds * 1e-9
     result = status_align_step.run(targets=detection.targets, now_s=now_s)
+    env_status = EnvStatus.RUNNING.value if detection.ready else EnvStatus.READY.value
 
     node.cmd_pub.publish(_build_cmd_message(result.command_x))
     node.phase_pub.publish(Phase.STATUS_ALIGN.value)
     node.algo_status_pub.publish(result.status.value)
-    node.env_status_pub.publish(
-        EnvStatus.RUNNING.value if detection.ready else EnvStatus.READY.value
-    )
+    node.env_status_pub.publish(env_status)
     if result.selected_target is not None:
         node.selected_target_pub.publish(
             {
@@ -55,6 +70,16 @@ def run_status_align_once(
                 "frame_id": cfg.frame_id,
             }
         )
+    return StatusAlignCycleResult(
+        phase=Phase.STATUS_ALIGN.value,
+        algo_status=result.status.value,
+        env_status=env_status,
+        command_x=result.command_x,
+        stop_requested=should_stop_after_status_align(
+            one_shot=one_shot,
+            algo_status=result.status,
+        ),
+    )
 
 
 class PidAlignmentRunnerNode:
