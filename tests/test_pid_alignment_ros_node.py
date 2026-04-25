@@ -30,7 +30,9 @@ def make_cfg(*, environment: str = "turtle", one_shot: bool = True) -> PidAlignm
             status_profile="status_competition",
             input_source="0",
         ),
-        adapter=AdapterConfig(turtle_cmd_topic="/turtle1/cmd_vel"),
+        adapter=AdapterConfig(
+            turtle_cmd_topic="/turtle1/cmd_vel" if environment == "turtle" else None
+        ),
     )
 
 
@@ -38,12 +40,22 @@ def import_with_fake_ros(monkeypatch):
     class FakeNode:
         def __init__(self, node_name: str) -> None:
             self.node_name = node_name
+            self.logger = SimpleNamespace(info_messages=[], warning_messages=[])
 
         def destroy_node(self) -> bool:
             return True
 
         def get_clock(self):
             return SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: None))
+
+        def get_logger(self):
+            def info(message: str) -> None:
+                self.logger.info_messages.append(message)
+
+            def warning(message: str) -> None:
+                self.logger.warning_messages.append(message)
+
+            return SimpleNamespace(info=info, warning=warning)
 
     class FakeString:
         def __init__(self) -> None:
@@ -130,10 +142,14 @@ def test_on_timer_runs_one_shot_cycle_and_destroys_node(monkeypatch):
 
     class FakeLogger:
         def __init__(self) -> None:
-            self.messages: list[str] = []
+            self.info_messages: list[str] = []
+            self.warning_messages: list[str] = []
+
+        def info(self, message: str) -> None:
+            self.info_messages.append(message)
 
         def warning(self, message: str) -> None:
-            self.messages.append(message)
+            self.warning_messages.append(message)
 
     node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
     node._cfg = make_cfg(one_shot=True)
@@ -157,6 +173,43 @@ def test_on_timer_runs_one_shot_cycle_and_destroys_node(monkeypatch):
     assert calls["cfg"] is node._runner_cfg
     assert calls["one_shot"] is True
     assert node.destroyed is True
+    assert node._logger.info_messages == [
+        "one-shot status align finished with algo_status=ALIGNED; stopping node"
+    ]
+
+
+def test_on_timer_publishes_zero_command_when_frame_read_fails():
+    class FakeCapture:
+        def read(self):
+            return False, None
+
+    class FakeLogger:
+        def __init__(self) -> None:
+            self.warning_messages: list[str] = []
+
+        def warning(self, message: str) -> None:
+            self.warning_messages.append(message)
+
+    class FakeCmdPublisher:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, float]] = []
+
+        def publish(self, message: dict[str, float]) -> None:
+            self.messages.append(message)
+
+    node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
+    node._cap = FakeCapture()
+    node._cmd_pub = FakeCmdPublisher()
+    node._runner_cfg = SimpleNamespace(cmd_topic="/cmd_vel")
+    node._logger = FakeLogger()
+    node.get_logger = lambda: node._logger
+
+    node._on_timer()
+
+    assert node._cmd_pub.messages == [{"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}]
+    assert node._logger.warning_messages == [
+        "Frame read failed; published zero velocity to /cmd_vel"
+    ]
 
 
 def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monkeypatch):
@@ -214,6 +267,16 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
 
     assert node.env_status_pub._ros_publisher.messages == []
     assert captured["turtle_cmd_publisher"] is None
+    assert node.logger.info_messages == [
+        (
+            "starting pid_alignment_runner environment=robot one_shot=True "
+            "start_phase=STATUS_ALIGN input_source=0 status_profile=status_competition "
+            "cmd_topic=/cmd_vel selected_status_topic=/robot_fetch/selected_target_px "
+            "workflow_phase_topic=/workflow/phase algo_status_topic=/workflow/algo_status "
+            "env_status_topic=/workflow/env_status turtle_cmd_topic=None "
+            "target_x=320.000 tolerance_px=8.000"
+        )
+    ]
 
 
 def test_pid_alignment_ros_node_bridges_runner_cmd_to_turtle_topic(monkeypatch):

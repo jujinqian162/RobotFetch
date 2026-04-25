@@ -28,6 +28,9 @@ from config.models import PidAlignmentWorkflowConfig
 from runners.pid_alignment_runner import RunnerConfig, run_status_align_once
 
 
+ZERO_CMD_MESSAGE = {"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}
+
+
 class _StringPublisher:
     def __init__(self, *, ros_publisher: Any, message_type: type[String]) -> None:
         self._ros_publisher = ros_publisher
@@ -183,6 +186,7 @@ class PidAlignmentRosNode(Node):
             env_status_topic=cfg.topics.env_status_topic,
             frame_id="camera_link",
             one_shot=cfg.one_shot,
+            target_x=cfg.target_x,
         )
 
         workflow_cmd_ros_publisher = self.create_publisher(Twist, cfg.topics.cmd_topic, 10)
@@ -231,6 +235,7 @@ class PidAlignmentRosNode(Node):
         self._status_align = build_status_align_step(cfg)
         self._cap = build_capture(cfg.detector.input_source)
         self._timer = self.create_timer(0.1, self._on_timer)
+        self.get_logger().info(_build_startup_log_message(cfg))
 
     @property
     def cmd_pub(self) -> _TwistPublisher:
@@ -263,7 +268,11 @@ class PidAlignmentRosNode(Node):
     def _on_timer(self) -> None:
         ok, frame = self._cap.read()
         if not ok:
-            self.get_logger().warning("Frame read failed")
+            self._cmd_pub.publish(ZERO_CMD_MESSAGE)
+            self.get_logger().warning(
+                "Frame read failed; published zero velocity to "
+                f"{self._runner_cfg.cmd_topic}"
+            )
             return
 
         self._adapter.on_phase(self._cfg.start_phase)
@@ -276,7 +285,30 @@ class PidAlignmentRosNode(Node):
             one_shot=self._cfg.one_shot,
         )
         if cycle.stop_requested:
+            self.get_logger().info(
+                "one-shot status align finished with "
+                f"algo_status={cycle.algo_status}; stopping node"
+            )
             self.destroy_node()
+
+
+def _build_startup_log_message(cfg: PidAlignmentWorkflowConfig) -> str:
+    return (
+        "starting pid_alignment_runner "
+        f"environment={cfg.environment} "
+        f"one_shot={cfg.one_shot} "
+        f"start_phase={cfg.start_phase} "
+        f"input_source={cfg.detector.input_source} "
+        f"status_profile={cfg.detector.status_profile} "
+        f"cmd_topic={cfg.topics.cmd_topic} "
+        f"selected_status_topic={cfg.topics.selected_status_topic} "
+        f"workflow_phase_topic={cfg.topics.workflow_phase_topic} "
+        f"algo_status_topic={cfg.topics.algo_status_topic} "
+        f"env_status_topic={cfg.topics.env_status_topic} "
+        f"turtle_cmd_topic={cfg.adapter.turtle_cmd_topic} "
+        f"target_x={cfg.target_x:.3f} "
+        f"tolerance_px={cfg.tolerance_px:.3f}"
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

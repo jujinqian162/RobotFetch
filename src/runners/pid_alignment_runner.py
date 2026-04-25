@@ -28,6 +28,7 @@ class RunnerConfig:
     env_status_topic: str
     frame_id: str
     one_shot: bool = False
+    target_x: float = 320.0
 
 
 @dataclass(frozen=True)
@@ -58,8 +59,9 @@ def run_status_align_once(
     now_s = node.get_clock().now().nanoseconds * 1e-9
     result = status_align_step.run(targets=detection.targets, now_s=now_s)
     env_status = EnvStatus.RUNNING.value if detection.ready else EnvStatus.READY.value
+    cmd_message = _build_cmd_message(result.command_x)
 
-    node.cmd_pub.publish(_build_cmd_message(result.command_x))
+    node.cmd_pub.publish(cmd_message)
     node.phase_pub.publish(Phase.STATUS_ALIGN.value)
     node.algo_status_pub.publish(result.status.value)
     node.env_status_pub.publish(env_status)
@@ -71,6 +73,14 @@ def run_status_align_once(
                 "frame_id": cfg.frame_id,
             }
         )
+    _log_status_align_cycle(
+        node=node,
+        cfg=cfg,
+        detection=detection,
+        result=result,
+        env_status=env_status,
+        cmd_message=cmd_message,
+    )
     return StatusAlignCycleResult(
         phase=Phase.STATUS_ALIGN.value,
         algo_status=result.status.value,
@@ -139,6 +149,51 @@ def _build_cmd_message(command_x: float) -> dict[str, float]:
         "linear_y": float(command_x),
         "angular_z": 0.0,
     }
+
+
+def _log_status_align_cycle(
+    *,
+    node: Any,
+    cfg: RunnerConfig,
+    detection: Any,
+    result: Any,
+    env_status: str,
+    cmd_message: dict[str, float],
+) -> None:
+    get_logger = getattr(node, "get_logger", None)
+    if not callable(get_logger):
+        return
+    logger = get_logger()
+    info = getattr(logger, "info", None)
+    if not callable(info):
+        return
+
+    selected = result.selected_target
+    selected_label = getattr(selected, "label", None) if selected is not None else None
+    selected_cx = getattr(selected, "cx", None) if selected is not None else None
+    error_px = None if selected_cx is None else cfg.target_x - float(selected_cx)
+    info(
+        "status_align cycle "
+        f"phase={Phase.STATUS_ALIGN.value} "
+        f"detector_ready={bool(detection.ready)} "
+        f"target_count={len(detection.targets)} "
+        f"selected_label={selected_label if selected_label is not None else 'None'} "
+        f"selected_cx={_format_optional_float(selected_cx)} "
+        f"error_px={_format_optional_float(error_px)} "
+        f"cmd_topic={cfg.cmd_topic} "
+        f"linear_x={cmd_message['linear_x']:.6f} "
+        f"linear_y={cmd_message['linear_y']:.6f} "
+        f"angular_z={cmd_message['angular_z']:.6f} "
+        f"algo_status={result.status.value} "
+        f"env_status={env_status} "
+        f"selected_status_topic={cfg.selected_status_topic}"
+    )
+
+
+def _format_optional_float(value: object) -> str:
+    if value is None:
+        return "None"
+    return f"{float(value):.3f}"
 
 
 def build_default_status_align_step() -> StatusAlignStep:

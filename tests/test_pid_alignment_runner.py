@@ -34,6 +34,14 @@ class FakePublisher:
         self.messages.append(message)
 
 
+@dataclass
+class FakeLogger:
+    info_messages: list[str] = field(default_factory=list)
+
+    def info(self, message: str) -> None:
+        self.info_messages.append(message)
+
+
 class FakeDetectorGateway:
     def __init__(self, batch: FakeDetectionBatch) -> None:
         self.batch = batch
@@ -70,9 +78,13 @@ class FakeNodeHarness:
     env_status_pub: FakePublisher = field(default_factory=FakePublisher)
     selected_target_pub: FakePublisher = field(default_factory=FakePublisher)
     clock: FakeClock = field(default_factory=lambda: FakeClock(12.5))
+    logger: FakeLogger = field(default_factory=FakeLogger)
 
     def get_clock(self) -> FakeClock:
         return self.clock
+
+    def get_logger(self) -> FakeLogger:
+        return self.logger
 
 
 DEFAULT_CONFIG = RunnerConfig(
@@ -118,6 +130,16 @@ def test_run_status_align_once_publishes_running_command_and_statuses():
     assert harness.env_status_pub.messages == [EnvStatus.RUNNING.value]
     assert harness.cmd_pub.messages == [{"linear_x": 0.0, "linear_y": 0.2, "angular_z": 0.0}]
     assert harness.selected_target_pub.messages == [{"label": "palm", "cx": 300.0, "frame_id": "camera_link"}]
+    assert len(harness.logger.info_messages) == 1
+    assert "status_align cycle" in harness.logger.info_messages[0]
+    assert "detector_ready=True" in harness.logger.info_messages[0]
+    assert "target_count=1" in harness.logger.info_messages[0]
+    assert "selected_label=palm" in harness.logger.info_messages[0]
+    assert "selected_cx=300.000" in harness.logger.info_messages[0]
+    assert "error_px=20.000" in harness.logger.info_messages[0]
+    assert "cmd_topic=/cmd_vel" in harness.logger.info_messages[0]
+    assert "linear_y=0.200000" in harness.logger.info_messages[0]
+    assert "algo_status=RUNNING" in harness.logger.info_messages[0]
 
 
 
@@ -151,6 +173,45 @@ def test_run_status_align_once_publishes_ready_env_status_when_detector_not_read
     assert harness.env_status_pub.messages == [EnvStatus.READY.value]
     assert harness.cmd_pub.messages == [{"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}]
     assert harness.selected_target_pub.messages == []
+    assert len(harness.logger.info_messages) == 1
+    assert "detector_ready=False" in harness.logger.info_messages[0]
+    assert "target_count=0" in harness.logger.info_messages[0]
+    assert "selected_label=None" in harness.logger.info_messages[0]
+    assert "algo_status=TARGET_LOST" in harness.logger.info_messages[0]
+
+
+def test_run_status_align_once_logs_error_from_configured_target_x():
+    target = FakeStatusTarget(label="palm", cx=300.0)
+    harness = FakeNodeHarness()
+    detector = FakeDetectorGateway(FakeDetectionBatch(ready=True, targets=[target]))
+    step = FakeStatusAlignStep(
+        FakeStatusAlignResult(
+            status=AlgoStatus.RUNNING,
+            command_x=0.2,
+            selected_target=target,
+            aligned=False,
+        )
+    )
+    cfg = RunnerConfig(
+        cmd_topic="/cmd_vel",
+        selected_status_topic="/robot_fetch/selected_target_px",
+        workflow_phase_topic="/workflow/phase",
+        algo_status_topic="/workflow/algo_status",
+        env_status_topic="/workflow/env_status",
+        frame_id="camera_link",
+        one_shot=False,
+        target_x=400.0,
+    )
+
+    run_status_align_once(
+        node=harness,
+        frame=object(),
+        detector_gateway=detector,
+        status_align_step=step,
+        cfg=cfg,
+    )
+
+    assert "error_px=100.000" in harness.logger.info_messages[0]
 
 
 
