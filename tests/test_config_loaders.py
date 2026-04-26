@@ -15,7 +15,7 @@ def test_load_pid_alignment_config_reads_turtle_workflow_file():
 
     assert cfg.environment == "turtle"
     assert cfg.start_phase == "STATUS_ALIGN"
-    assert cfg.one_shot is True
+    assert cfg.phase_sequence == ("STATUS_ALIGN",)
     assert cfg.target_x == 320.0
     assert cfg.tolerance_px == 8.0
     assert cfg.topics.cmd_topic == "/cmd_vel"
@@ -35,7 +35,7 @@ def test_load_pid_alignment_config_reads_robot_workflow_file():
 
     assert cfg.environment == "robot"
     assert cfg.start_phase == "STATUS_ALIGN"
-    assert cfg.one_shot is True
+    assert cfg.phase_sequence == ("STATUS_ALIGN",)
     assert cfg.target_x == 320.0
     assert cfg.tolerance_px == 8.0
     assert cfg.topics.algo_status_topic == "/workflow/algo_status"
@@ -61,14 +61,14 @@ def test_load_pid_alignment_config_resolves_sdk_config_independent_of_cwd(
     )
 
 
-def test_load_pid_alignment_config_rejects_string_for_one_shot(tmp_path: Path):
+def test_load_pid_alignment_config_rejects_string_for_phase_sequence(tmp_path: Path):
     config_path = tmp_path / "pid_alignment.invalid.yaml"
     config_path.write_text(
         """
 pid_alignment_workflow:
   environment: turtle
   start_phase: STATUS_ALIGN
-  one_shot: "false"
+  phase_sequence: STATUS_ALIGN
   detector:
     sdk_config: BaseDetect/configs/basedetect_sdk.yaml
     status_profile: status_competition
@@ -88,7 +88,71 @@ pid_alignment_workflow:
         encoding="utf-8",
     )
 
-    with pytest.raises(TypeError, match="one_shot"):
+    with pytest.raises(TypeError, match="phase_sequence"):
+        load_pid_alignment_config(config_path)
+
+
+def test_load_pid_alignment_config_defaults_phase_sequence_to_start_phase(tmp_path: Path):
+    config_path = tmp_path / "pid_alignment.default_sequence.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: turtle
+  start_phase: STATUS_ALIGN
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: /turtle1/cmd_vel
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_pid_alignment_config(config_path)
+
+    assert cfg.phase_sequence == ("STATUS_ALIGN",)
+
+
+def test_load_pid_alignment_config_rejects_sequence_that_does_not_start_with_start_phase(
+    tmp_path: Path,
+):
+    config_path = tmp_path / "pid_alignment.invalid_sequence.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: turtle
+  start_phase: STATUS_ALIGN
+  phase_sequence: [FORWARD_APPROACH]
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: /turtle1/cmd_vel
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must start with start_phase"):
         load_pid_alignment_config(config_path)
 
 
@@ -99,7 +163,7 @@ def test_load_pid_alignment_config_rejects_non_string_environment(tmp_path: Path
 pid_alignment_workflow:
   environment: 123
   start_phase: STATUS_ALIGN
-  one_shot: true
+  phase_sequence: [STATUS_ALIGN]
   detector:
     sdk_config: BaseDetect/configs/basedetect_sdk.yaml
     status_profile: status_competition
@@ -130,7 +194,7 @@ def test_load_pid_alignment_config_rejects_null_start_phase(tmp_path: Path):
 pid_alignment_workflow:
   environment: turtle
   start_phase: null
-  one_shot: true
+  phase_sequence: [STATUS_ALIGN]
   detector:
     sdk_config: BaseDetect/configs/basedetect_sdk.yaml
     status_profile: status_competition

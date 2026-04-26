@@ -30,20 +30,23 @@ def load_pid_alignment_config(
         root, "status_align", parent="pid_alignment_workflow"
     )
 
+    start_phase = _require_defaulted_str_field(
+        root,
+        "start_phase",
+        default="STATUS_ALIGN",
+        parent="pid_alignment_workflow",
+    )
+    phase_sequence = _require_phase_sequence_field(
+        root,
+        "phase_sequence",
+        start_phase=start_phase,
+        parent="pid_alignment_workflow",
+    )
+
     return PidAlignmentWorkflowConfig(
         environment=_require_str_field(root, "environment", parent="pid_alignment_workflow"),
-        start_phase=_require_defaulted_str_field(
-            root,
-            "start_phase",
-            default="STATUS_ALIGN",
-            parent="pid_alignment_workflow",
-        ),
-        one_shot=_require_optional_bool_field(
-            root,
-            "one_shot",
-            default=False,
-            parent="pid_alignment_workflow",
-        ),
+        start_phase=start_phase,
+        phase_sequence=phase_sequence,
         target_x=_require_float_field(
             status_align, "target_x", parent="pid_alignment_workflow.status_align"
         ),
@@ -158,15 +161,26 @@ def _require_defaulted_str_field(
     return value
 
 
-def _require_optional_bool_field(
-    mapping: dict[str, Any], key: str, *, default: bool, parent: str
-) -> bool:
+def _require_phase_sequence_field(
+    mapping: dict[str, Any],
+    key: str,
+    *,
+    start_phase: str,
+    parent: str,
+) -> tuple[str, ...]:
     if key not in mapping:
-        return default
+        return (start_phase,)
     value = mapping[key]
-    if not isinstance(value, bool):
-        raise TypeError(f"{parent}.{key} must be a bool")
-    return value
+    if not isinstance(value, list):
+        raise TypeError(f"{parent}.{key} must be a list of strings")
+    if not value:
+        raise ValueError(f"{parent}.{key} must not be empty")
+    for item in value:
+        if not isinstance(item, str):
+            raise TypeError(f"{parent}.{key} must be a list of strings")
+    if value[0] != start_phase:
+        raise ValueError(f"{parent}.{key} must start with start_phase {start_phase}")
+    return tuple(value)
 
 
 def _require_float_field(mapping: dict[str, Any], key: str, *, parent: str) -> float:

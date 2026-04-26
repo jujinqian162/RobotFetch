@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import sys
 
@@ -27,7 +27,7 @@ class RunnerConfig:
     algo_status_topic: str
     env_status_topic: str
     frame_id: str
-    one_shot: bool = False
+    phase_sequence: tuple[str, ...] = (Phase.STATUS_ALIGN.value,)
     target_x: float = 320.0
 
 
@@ -38,12 +38,58 @@ class StatusAlignCycleResult:
     env_status: str
     command_x: float
     stop_requested: bool
+    stop_reason: str | None
 
 
-def should_stop_after_status_align(*, one_shot: bool, algo_status: AlgoStatus) -> bool:
-    if not one_shot:
-        return False
-    return algo_status in {AlgoStatus.ALIGNED, AlgoStatus.TARGET_LOST, AlgoStatus.ERROR}
+@dataclass
+class DeduplicatingLogCache:
+    stream: TextIO = field(default_factory=lambda: sys.stderr)
+    _last_key: tuple[str, str] | None = None
+    _repeat_count: int = 0
+    _repeat_line_open: bool = False
+
+    def log(self, *, logger: Any, level: str, message: str) -> None:
+        key = (level, message)
+        if key == self._last_key:
+            self._repeat_count += 1
+            self.stream.write(f"\r(+{self._repeat_count})")
+            self.stream.flush()
+            self._repeat_line_open = True
+            return
+
+        if self._repeat_line_open:
+            self.stream.write("\n")
+            self.stream.flush()
+
+        _emit_log(logger=logger, level=level, message=message)
+        self._last_key = key
+        self._repeat_count = 0
+        self._repeat_line_open = False
+
+
+def _emit_log(*, logger: Any, level: str, message: str) -> None:
+    if level == "info":
+        logger.info(message)
+        return
+    if level == "warning":
+        logger.warning(message)
+        return
+    raise ValueError(f"Unsupported log level: {level}")
+
+
+def stop_reason_after_status_align(
+    *, phase_sequence: tuple[str, ...], algo_status: AlgoStatus
+) -> str | None:
+    if algo_status not in {AlgoStatus.ALIGNED, AlgoStatus.ERROR}:
+        return None
+    try:
+        status_index = phase_sequence.index(Phase.STATUS_ALIGN.value)
+    except ValueError:
+        return "phase_sequence_missing_status_align"
+    next_index = status_index + 1
+    if next_index >= len(phase_sequence):
+        return "phase_sequence_complete"
+    return f"next_phase_not_implemented:{phase_sequence[next_index]}"
 
 
 def run_status_align_once(
@@ -53,7 +99,6 @@ def run_status_align_once(
     detector_gateway: Any,
     status_align_step: Any,
     cfg: RunnerConfig,
-    one_shot: bool = False,
 ) -> StatusAlignCycleResult:
     detection = detector_gateway.detect_status_targets(frame)
     now_s = node.get_clock().now().nanoseconds * 1e-9
@@ -81,15 +126,17 @@ def run_status_align_once(
         env_status=env_status,
         cmd_message=cmd_message,
     )
+    stop_reason = stop_reason_after_status_align(
+        phase_sequence=cfg.phase_sequence,
+        algo_status=result.status,
+    )
     return StatusAlignCycleResult(
         phase=Phase.STATUS_ALIGN.value,
         algo_status=result.status.value,
         env_status=env_status,
         command_x=result.command_x,
-        stop_requested=should_stop_after_status_align(
-            one_shot=one_shot,
-            algo_status=result.status,
-        ),
+        stop_requested=stop_reason is not None,
+        stop_reason=stop_reason,
     )
 
 
@@ -139,7 +186,6 @@ class PidAlignmentRunnerNode:
             detector_gateway=self._detector_gateway,
             status_align_step=self._status_align_step,
             cfg=self._runner_cfg,
-            one_shot=self._runner_cfg.one_shot,
         )
 
 
@@ -172,22 +218,39 @@ def _log_status_align_cycle(
     selected_label = getattr(selected, "label", None) if selected is not None else None
     selected_cx = getattr(selected, "cx", None) if selected is not None else None
     error_px = None if selected_cx is None else cfg.target_x - float(selected_cx)
-    info(
-        "status_align cycle "
-        f"phase={Phase.STATUS_ALIGN.value} "
-        f"detector_ready={bool(detection.ready)} "
-        f"target_count={len(detection.targets)} "
-        f"selected_label={selected_label if selected_label is not None else 'None'} "
-        f"selected_cx={_format_optional_float(selected_cx)} "
-        f"error_px={_format_optional_float(error_px)} "
-        f"cmd_topic={cfg.cmd_topic} "
-        f"linear_x={cmd_message['linear_x']:.6f} "
-        f"linear_y={cmd_message['linear_y']:.6f} "
-        f"angular_z={cmd_message['angular_z']:.6f} "
-        f"algo_status={result.status.value} "
-        f"env_status={env_status} "
-        f"selected_status_topic={cfg.selected_status_topic}"
+    log_deduplicated(
+        node=node,
+        logger=logger,
+        level="info",
+        message=(
+            "status_align cycle "
+            f"phase={Phase.STATUS_ALIGN.value} "
+            f"detector_ready={bool(detection.ready)} "
+            f"target_count={len(detection.targets)} "
+            f"selected_label={selected_label if selected_label is not None else 'None'} "
+            f"selected_cx={_format_optional_float(selected_cx)} "
+            f"error_px={_format_optional_float(error_px)} "
+            f"cmd_topic={cfg.cmd_topic} "
+            f"linear_x={cmd_message['linear_x']:.6f} "
+            f"linear_y={cmd_message['linear_y']:.6f} "
+            f"angular_z={cmd_message['angular_z']:.6f} "
+            f"algo_status={result.status.value} "
+            f"env_status={env_status} "
+            f"selected_status_topic={cfg.selected_status_topic}"
+        ),
     )
+
+
+def log_deduplicated(*, node: Any, logger: Any, level: str, message: str) -> None:
+    is_ros_context_ok = getattr(node, "_is_ros_context_ok", None)
+    if callable(is_ros_context_ok) and not is_ros_context_ok():
+        return
+
+    cache = getattr(node, "_log_deduplicator", None)
+    if cache is None:
+        cache = DeduplicatingLogCache()
+        setattr(node, "_log_deduplicator", cache)
+    cache.log(logger=logger, level=level, message=message)
 
 
 def _format_optional_float(value: object) -> str:
@@ -225,5 +288,5 @@ def build_default_runner_config() -> RunnerConfig:
         algo_status_topic="/workflow/algo_status",
         env_status_topic="/workflow/env_status",
         frame_id="camera_link",
-        one_shot=False,
+        phase_sequence=(Phase.STATUS_ALIGN.value,),
     )

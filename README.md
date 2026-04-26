@@ -123,12 +123,13 @@ ros2 topic echo /robot_fetch/target_position
 这个 runner 仍然覆盖 status 模式下的核心链路：
 
 1. `status` 模式：按 `|cx - target_x|` 最小选择目标，PID 仅做横向对齐。
-2. one-shot 行为由 workflow YAML 中的 `one_shot` 控制。
+2. 测试范围由 workflow YAML 中的 `phase_sequence` 控制；当前 MVP 配置为 `[STATUS_ALIGN]`，只跑对齐阶段。
 3. 前移阶段没有放进这个 MVP runner，后续由 full mission runner 接管。
 
 当前部分验证的关键配置项在 workflow YAML 中：
 
 - `status_align.target_x`：状态模式下对齐目标像素 x
+- `phase_sequence`：本次要执行的阶段序列；单阶段测试可写 `[STATUS_ALIGN]`
 - `detector.status_profile`：status 检测 profile
 - `topics.selected_status_topic`：当前选中目标像素话题
 - `adapter.turtle_cmd_topic`：`environment: turtle` 时，将 runner 的 `/cmd_vel` 输出桥接为 turtlesim 可执行的速度话题
@@ -149,7 +150,7 @@ Real robot partial test:
 python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alignment.robot.yaml
 ```
 
-One-shot mode is controlled in YAML with `one_shot: true`.
+The test scope is controlled in YAML with `phase_sequence`. Current partial-test configs use `phase_sequence: [STATUS_ALIGN]`.
 Forward motion is deferred to the full mission runner and is not part of this MVP runner.
 
 

@@ -9,7 +9,9 @@ from typing import Any, Callable
 
 import rclpy
 from geometry_msgs.msg import PointStamped, Twist
+from rclpy._rclpy_pybind11 import RCLError
 from rclpy.node import Node
+from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String
 
 WORKTREE_ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +27,11 @@ from algorithms.pid import PIDConfig
 from algorithms.status_align import StatusAlignConfig, StatusAlignStep
 from config.loaders import load_pid_alignment_config
 from config.models import PidAlignmentWorkflowConfig
-from runners.pid_alignment_runner import RunnerConfig, run_status_align_once
+from runners.pid_alignment_runner import (
+    RunnerConfig,
+    log_deduplicated,
+    run_status_align_once,
+)
 
 
 ZERO_CMD_MESSAGE = {"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}
@@ -161,9 +167,26 @@ def build_status_align_step(cfg: PidAlignmentWorkflowConfig) -> StatusAlignStep:
 def build_capture(input_source: str) -> Any:
     import cv2
 
-    capture = cv2.VideoCapture(_resolve_input_source(input_source))
+    source = _resolve_input_source(input_source)
+    capture = cv2.VideoCapture(source)
     if hasattr(capture, "isOpened") and not capture.isOpened():
         raise RuntimeError(f"Unable to open source: {input_source}")
+    return capture
+
+
+def build_v4l2_mjpg_capture(input_source: str) -> Any:
+    import cv2
+
+    source = _resolve_input_source(input_source)
+    if not isinstance(source, int):
+        raise RuntimeError(f"V4L2 MJPG fallback requires numeric source: {input_source}")
+    capture = cv2.VideoCapture(source, cv2.CAP_V4L2)
+    capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    capture.set(cv2.CAP_PROP_FPS, 30)
+    if hasattr(capture, "isOpened") and not capture.isOpened():
+        raise RuntimeError(f"Unable to open source with V4L2 MJPG fallback: {input_source}")
     return capture
 
 
@@ -178,6 +201,7 @@ class PidAlignmentRosNode(Node):
         super().__init__("pid_alignment_runner")
         self._cfg = cfg
         self._capture_released = False
+        self._capture_read_fallback_attempted = False
         self._runner_cfg = RunnerConfig(
             cmd_topic=cfg.topics.cmd_topic,
             selected_status_topic=cfg.topics.selected_status_topic,
@@ -185,7 +209,7 @@ class PidAlignmentRosNode(Node):
             algo_status_topic=cfg.topics.algo_status_topic,
             env_status_topic=cfg.topics.env_status_topic,
             frame_id="camera_link",
-            one_shot=cfg.one_shot,
+            phase_sequence=cfg.phase_sequence,
             target_x=cfg.target_x,
         )
 
@@ -257,6 +281,9 @@ class PidAlignmentRosNode(Node):
     def selected_target_pub(self) -> _SelectedTargetPublisher:
         return self._selected_target_pub
 
+    def _is_ros_context_ok(self) -> bool:
+        return rclpy.ok()
+
     def destroy_node(self) -> bool:
         if not self._capture_released:
             release = getattr(self._cap, "release", None)
@@ -268,10 +295,17 @@ class PidAlignmentRosNode(Node):
     def _on_timer(self) -> None:
         ok, frame = self._cap.read()
         if not ok:
+            ok, frame = self._try_read_with_capture_fallback()
+        if not ok:
             self._cmd_pub.publish(ZERO_CMD_MESSAGE)
-            self.get_logger().warning(
-                "Frame read failed; published zero velocity to "
-                f"{self._runner_cfg.cmd_topic}"
+            log_deduplicated(
+                node=self,
+                logger=self.get_logger(),
+                level="warning",
+                message=(
+                    "Frame read failed; published zero velocity to "
+                    f"{self._runner_cfg.cmd_topic}"
+                ),
             )
             return
 
@@ -282,21 +316,51 @@ class PidAlignmentRosNode(Node):
             detector_gateway=self._gateway,
             status_align_step=self._status_align,
             cfg=self._runner_cfg,
-            one_shot=self._cfg.one_shot,
         )
         if cycle.stop_requested:
-            self.get_logger().info(
-                "one-shot status align finished with "
-                f"algo_status={cycle.algo_status}; stopping node"
+            log_deduplicated(
+                node=self,
+                logger=self.get_logger(),
+                level="info",
+                message=(
+                    "phase sequence stop requested "
+                    f"reason={cycle.stop_reason} "
+                    f"phase={cycle.phase} "
+                    f"algo_status={cycle.algo_status}; stopping node"
+                ),
             )
             self.destroy_node()
+            rclpy.try_shutdown()
+
+    def _try_read_with_capture_fallback(self) -> tuple[bool, Any]:
+        input_source = self._cfg.detector.input_source
+        if self._capture_read_fallback_attempted:
+            return False, None
+        if not isinstance(_resolve_input_source(input_source), int):
+            return False, None
+
+        self._capture_read_fallback_attempted = True
+        log_deduplicated(
+            node=self,
+            logger=self.get_logger(),
+            level="warning",
+            message=(
+                "Frame read failed; retrying camera "
+                f"{input_source} with V4L2 MJPG fallback"
+            ),
+        )
+        release = getattr(self._cap, "release", None)
+        if callable(release):
+            release()
+        self._cap = build_v4l2_mjpg_capture(input_source)
+        return self._cap.read()
 
 
 def _build_startup_log_message(cfg: PidAlignmentWorkflowConfig) -> str:
     return (
         "starting pid_alignment_runner "
         f"environment={cfg.environment} "
-        f"one_shot={cfg.one_shot} "
+        f"phase_sequence={','.join(cfg.phase_sequence)} "
         f"start_phase={cfg.start_phase} "
         f"input_source={cfg.detector.input_source} "
         f"status_profile={cfg.detector.status_profile} "
@@ -323,15 +387,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     node: PidAlignmentRosNode | None = None
-    rclpy.init()
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     try:
         cfg = load_pid_alignment_config(Path(args.config))
         node = PidAlignmentRosNode(cfg=cfg)
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except RCLError:
+        if rclpy.ok():
+            raise
     finally:
         if node is not None:
             node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

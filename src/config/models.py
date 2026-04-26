@@ -29,7 +29,7 @@ class AdapterConfig:
 class PidAlignmentWorkflowConfig:
     environment: str
     start_phase: str
-    one_shot: bool
+    phase_sequence: tuple[str, ...]
     target_x: float
     tolerance_px: float
     topics: TopicConfig

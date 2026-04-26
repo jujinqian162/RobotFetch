@@ -1,9 +1,15 @@
 from dataclasses import dataclass, field
+import inspect
 from types import SimpleNamespace
 
 from workflow.types import AlgoStatus, EnvStatus, Phase
 
-from runners.pid_alignment_runner import PidAlignmentRunnerNode, RunnerConfig, run_status_align_once
+from runners.pid_alignment_runner import (
+    DeduplicatingLogCache,
+    PidAlignmentRunnerNode,
+    RunnerConfig,
+    run_status_align_once,
+)
 
 
 @dataclass
@@ -37,9 +43,13 @@ class FakePublisher:
 @dataclass
 class FakeLogger:
     info_messages: list[str] = field(default_factory=list)
+    warning_messages: list[str] = field(default_factory=list)
 
     def info(self, message: str) -> None:
         self.info_messages.append(message)
+
+    def warning(self, message: str) -> None:
+        self.warning_messages.append(message)
 
 
 class FakeDetectorGateway:
@@ -94,7 +104,7 @@ DEFAULT_CONFIG = RunnerConfig(
     algo_status_topic="/workflow/algo_status",
     env_status_topic="/workflow/env_status",
     frame_id="camera_link",
-    one_shot=False,
+    phase_sequence=(Phase.STATUS_ALIGN.value,),
 )
 
 
@@ -125,6 +135,7 @@ def test_run_status_align_once_publishes_running_command_and_statuses():
     assert cycle.env_status == EnvStatus.RUNNING.value
     assert cycle.command_x == 0.2
     assert cycle.stop_requested is False
+    assert cycle.stop_reason is None
     assert harness.phase_pub.messages == [Phase.STATUS_ALIGN.value]
     assert harness.algo_status_pub.messages == [AlgoStatus.RUNNING.value]
     assert harness.env_status_pub.messages == [EnvStatus.RUNNING.value]
@@ -168,6 +179,7 @@ def test_run_status_align_once_publishes_ready_env_status_when_detector_not_read
     assert cycle.env_status == EnvStatus.READY.value
     assert cycle.command_x == 0.0
     assert cycle.stop_requested is False
+    assert cycle.stop_reason is None
     assert harness.phase_pub.messages == [Phase.STATUS_ALIGN.value]
     assert harness.algo_status_pub.messages == [AlgoStatus.TARGET_LOST.value]
     assert harness.env_status_pub.messages == [EnvStatus.READY.value]
@@ -199,7 +211,7 @@ def test_run_status_align_once_logs_error_from_configured_target_x():
         algo_status_topic="/workflow/algo_status",
         env_status_topic="/workflow/env_status",
         frame_id="camera_link",
-        one_shot=False,
+        phase_sequence=(Phase.STATUS_ALIGN.value,),
         target_x=400.0,
     )
 
@@ -212,6 +224,125 @@ def test_run_status_align_once_logs_error_from_configured_target_x():
     )
 
     assert "error_px=100.000" in harness.logger.info_messages[0]
+
+
+def test_deduplicating_log_cache_prints_repeated_count_without_full_log():
+    stream = SimpleNamespace(
+        chunks=[],
+        write=lambda chunk: stream.chunks.append(chunk),
+        flush=lambda: None,
+    )
+    cache = DeduplicatingLogCache(stream=stream)
+    logger = FakeLogger()
+
+    cache.log(logger=logger, level="info", message="same message")
+    cache.log(logger=logger, level="info", message="same message")
+    cache.log(logger=logger, level="info", message="same message")
+
+    assert logger.info_messages == ["same message"]
+    assert stream.chunks == ["\r(+1)", "\r(+2)"]
+
+
+def test_deduplicating_log_cache_starts_new_line_before_changed_log():
+    stream = SimpleNamespace(
+        chunks=[],
+        write=lambda chunk: stream.chunks.append(chunk),
+        flush=lambda: None,
+    )
+    cache = DeduplicatingLogCache(stream=stream)
+    logger = FakeLogger()
+
+    cache.log(logger=logger, level="info", message="same message")
+    cache.log(logger=logger, level="info", message="same message")
+    cache.log(logger=logger, level="info", message="different message")
+
+    assert logger.info_messages == ["same message", "different message"]
+    assert stream.chunks == ["\r(+1)", "\n"]
+
+
+def test_deduplicating_log_cache_allows_warning_then_info():
+    class RclpyLikeLogger(FakeLogger):
+        def __init__(self) -> None:
+            super().__init__()
+            self.severity_by_caller: dict[tuple[str, int], str] = {}
+
+        def _record_call(self, level: str, message: str) -> None:
+            caller = inspect.currentframe().f_back.f_back
+            caller_id = (caller.f_code.co_name, caller.f_lineno)
+            previous_level = self.severity_by_caller.get(caller_id)
+            if previous_level is not None and previous_level != level:
+                raise ValueError("Logger severity cannot be changed between calls.")
+            self.severity_by_caller[caller_id] = level
+            if level == "info":
+                self.info_messages.append(message)
+            elif level == "warning":
+                self.warning_messages.append(message)
+
+        def info(self, message: str) -> None:
+            self._record_call("info", message)
+
+        def warning(self, message: str) -> None:
+            self._record_call("warning", message)
+
+    logger = RclpyLikeLogger()
+    cache = DeduplicatingLogCache(
+        stream=SimpleNamespace(write=lambda chunk: None, flush=lambda: None)
+    )
+
+    cache.log(logger=logger, level="warning", message="camera retry")
+    cache.log(logger=logger, level="info", message="status cycle")
+
+    assert logger.warning_messages == ["camera retry"]
+    assert logger.info_messages == ["status cycle"]
+
+
+def test_log_deduplicated_skips_when_node_context_is_not_ok():
+    node = SimpleNamespace(_is_ros_context_ok=lambda: False)
+    logger = FakeLogger()
+
+    from runners.pid_alignment_runner import log_deduplicated
+
+    log_deduplicated(
+        node=node,
+        logger=logger,
+        level="info",
+        message="status cycle",
+    )
+
+    assert logger.info_messages == []
+    assert not hasattr(node, "_log_deduplicator")
+
+
+def test_run_status_align_once_deduplicates_consecutive_cycle_logs():
+    harness = FakeNodeHarness()
+    detector = FakeDetectorGateway(FakeDetectionBatch(ready=False, targets=[]))
+    step = FakeStatusAlignStep(
+        FakeStatusAlignResult(
+            status=AlgoStatus.TARGET_LOST,
+            command_x=0.0,
+            selected_target=None,
+            aligned=False,
+        )
+    )
+    stream = SimpleNamespace(
+        chunks=[],
+        write=lambda chunk: stream.chunks.append(chunk),
+        flush=lambda: None,
+    )
+    harness._log_deduplicator = DeduplicatingLogCache(stream=stream)
+
+    for frame in (object(), object(), object()):
+        run_status_align_once(
+            node=harness,
+            frame=frame,
+            detector_gateway=detector,
+            status_align_step=step,
+            cfg=DEFAULT_CONFIG,
+        )
+
+    assert len(harness.logger.info_messages) == 1
+    assert "status_align cycle" in harness.logger.info_messages[0]
+    assert stream.chunks == ["\r(+1)", "\r(+2)"]
 
 
 
@@ -253,7 +384,7 @@ def test_pid_alignment_runner_node_reports_running_publishers():
     assert node._env_status_pub.messages == [EnvStatus.RUNNING.value]
 
 
-def test_pid_alignment_runner_node_propagates_one_shot_stop_request():
+def test_pid_alignment_runner_node_stops_when_status_align_sequence_is_complete():
     node = PidAlignmentRunnerNode.__new__(PidAlignmentRunnerNode)
     node._cmd_pub = FakePublisher()
     node._phase_pub = FakePublisher()
@@ -283,7 +414,7 @@ def test_pid_alignment_runner_node_propagates_one_shot_stop_request():
         algo_status_topic="/workflow/algo_status",
         env_status_topic="/workflow/env_status",
         frame_id="camera_link",
-        one_shot=True,
+        phase_sequence=(Phase.STATUS_ALIGN.value,),
     )
     node._phase_controller = SimpleNamespace(enter_phase=lambda phase: phase)
 
@@ -294,3 +425,38 @@ def test_pid_alignment_runner_node_propagates_one_shot_stop_request():
     assert cycle.env_status == EnvStatus.RUNNING.value
     assert cycle.command_x == 0.0
     assert cycle.stop_requested is True
+    assert cycle.stop_reason == "phase_sequence_complete"
+
+
+def test_status_align_reports_unimplemented_next_sequence_phase():
+    harness = FakeNodeHarness()
+    target = FakeStatusTarget(label="palm", cx=320.0)
+    detector = FakeDetectorGateway(FakeDetectionBatch(ready=True, targets=[target]))
+    step = FakeStatusAlignStep(
+        FakeStatusAlignResult(
+            status=AlgoStatus.ALIGNED,
+            command_x=0.0,
+            selected_target=target,
+            aligned=True,
+        )
+    )
+    cfg = RunnerConfig(
+        cmd_topic="/cmd_vel",
+        selected_status_topic="/robot_fetch/selected_target_px",
+        workflow_phase_topic="/workflow/phase",
+        algo_status_topic="/workflow/algo_status",
+        env_status_topic="/workflow/env_status",
+        frame_id="camera_link",
+        phase_sequence=(Phase.STATUS_ALIGN.value, Phase.FORWARD_APPROACH.value),
+    )
+
+    cycle = run_status_align_once(
+        node=harness,
+        frame=object(),
+        detector_gateway=detector,
+        status_align_step=step,
+        cfg=cfg,
+    )
+
+    assert cycle.stop_requested is True
+    assert cycle.stop_reason == "next_phase_not_implemented:FORWARD_APPROACH"

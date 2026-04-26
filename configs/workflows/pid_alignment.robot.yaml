@@ -1,19 +1,53 @@
 pid_alignment_workflow:
+  # Runtime target:
+  # - turtle: publish normal workflow topics and bridge /cmd_vel to turtlesim.
+  # - robot: publish normal workflow topics only; the real base should consume cmd_topic.
   environment: robot
+
+  # First phase to enter when this runner starts.
+  # Current MVP runner implements STATUS_ALIGN only.
   start_phase: STATUS_ALIGN
-  one_shot: true
+
+  # Ordered phases to execute for this run.
+  # Use a single-item sequence for isolated phase testing, e.g. [STATUS_ALIGN].
+  # Future full mission configs can extend this to [STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD]
+  # after those phase runners are implemented.
+  phase_sequence: [STATUS_ALIGN]
+
   detector:
+    # BaseDetect SDK config path, relative to the RobotFetch project root unless absolute.
     sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+
+    # BaseDetect profile used for status-target detection during STATUS_ALIGN.
     status_profile: status_competition
+
+    # OpenCV input source. "0" means camera index 0; a video file path can be used for replay.
     input_source: "0"
+
   topics:
+    # Workflow velocity command. In robot mode the real base should subscribe here.
     cmd_topic: /cmd_vel
+
+    # Current workflow phase as std_msgs/String, e.g. STATUS_ALIGN.
     workflow_phase_topic: /workflow/phase
+
+    # Algorithm state as std_msgs/String, e.g. RUNNING, ALIGNED, TARGET_LOST, ERROR.
     algo_status_topic: /workflow/algo_status
+
+    # Environment/adapter state as std_msgs/String, e.g. READY or RUNNING.
     env_status_topic: /workflow/env_status
+
+    # Selected status target pixel output. point.x carries the selected target cx.
     selected_status_topic: /robot_fetch/selected_target_px
+
   adapter:
+    # turtlesim command topic. Used only when environment is turtle.
+    # Keep null for robot configs.
     turtle_cmd_topic: null
+
   status_align:
+    # Desired image x-coordinate for alignment, in pixels.
     target_x: 320.0
+
+    # Alignment succeeds when abs(target_x - selected_cx) is within this many pixels.
     tolerance_px: 8.0

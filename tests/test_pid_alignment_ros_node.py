@@ -11,11 +11,15 @@ from config.models import AdapterConfig, DetectorConfig, PidAlignmentWorkflowCon
 from workflow.types import AlgoStatus, Phase
 
 
-def make_cfg(*, environment: str = "turtle", one_shot: bool = True) -> PidAlignmentWorkflowConfig:
+def make_cfg(
+    *,
+    environment: str = "turtle",
+    phase_sequence: tuple[str, ...] = (Phase.STATUS_ALIGN.value,),
+) -> PidAlignmentWorkflowConfig:
     return PidAlignmentWorkflowConfig(
         environment=environment,
         start_phase=Phase.STATUS_ALIGN.value,
-        one_shot=one_shot,
+        phase_sequence=phase_sequence,
         target_x=320.0,
         tolerance_px=8.0,
         topics=TopicConfig(
@@ -74,6 +78,7 @@ def import_with_fake_ros(monkeypatch):
     fake_rclpy = types.ModuleType("rclpy")
     fake_rclpy.init = lambda: None
     fake_rclpy.shutdown = lambda: None
+    fake_rclpy.try_shutdown = lambda: None
     fake_rclpy.spin = lambda node: None
 
     fake_rclpy_node = types.ModuleType("rclpy.node")
@@ -116,18 +121,57 @@ def test_build_adapter_returns_robot_adapter_for_robot_environment():
     assert adapter.__class__.__name__ == "RobotAdapter"
 
 
-def test_on_timer_runs_one_shot_cycle_and_destroys_node(monkeypatch):
+def test_build_capture_keeps_default_numeric_camera_open(monkeypatch):
     calls: dict[str, object] = {}
+
+    class FakeCapture:
+        def __init__(self, source, backend=None) -> None:
+            calls["source"] = source
+            calls["backend"] = backend
+            self.set_calls: list[tuple[int, object]] = []
+
+        def isOpened(self) -> bool:
+            return True
+
+        def set(self, prop_id: int, value: object) -> None:
+            self.set_calls.append((prop_id, value))
+
+    fake_cv2 = types.SimpleNamespace(
+        CAP_V4L2=200,
+        CAP_PROP_FOURCC=6,
+        CAP_PROP_FRAME_WIDTH=3,
+        CAP_PROP_FRAME_HEIGHT=4,
+        CAP_PROP_FPS=5,
+        VideoCapture=FakeCapture,
+        VideoWriter_fourcc=lambda *chars: "FOURCC-" + "".join(chars),
+    )
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+    capture = ros_node.build_capture("0")
+
+    assert calls == {"source": 0, "backend": None}
+    assert capture.set_calls == []
+
+
+def test_on_timer_stops_when_phase_sequence_requests_stop(monkeypatch):
+    calls: dict[str, object] = {}
+    shutdown_calls: list[object] = []
 
     def fake_run_status_align_once(**kwargs):
         calls.update(kwargs)
         return SimpleNamespace(
             stop_requested=True,
+            stop_reason="phase_sequence_complete",
             phase=Phase.STATUS_ALIGN.value,
             algo_status=AlgoStatus.ALIGNED.value,
         )
 
     monkeypatch.setattr(ros_node, "run_status_align_once", fake_run_status_align_once)
+    monkeypatch.setattr(
+        ros_node.rclpy,
+        "try_shutdown",
+        lambda **kwargs: shutdown_calls.append(kwargs),
+    )
 
     class FakeCapture:
         def read(self):
@@ -152,14 +196,15 @@ def test_on_timer_runs_one_shot_cycle_and_destroys_node(monkeypatch):
             self.warning_messages.append(message)
 
     node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
-    node._cfg = make_cfg(one_shot=True)
-    node._runner_cfg = SimpleNamespace(one_shot=True)
+    node._cfg = make_cfg()
+    node._runner_cfg = SimpleNamespace(phase_sequence=(Phase.STATUS_ALIGN.value,))
     node._cap = FakeCapture()
     node._adapter = FakeAdapter()
     node._gateway = object()
     node._status_align = object()
     node._logger = FakeLogger()
     node.get_logger = lambda: node._logger
+    node._is_ros_context_ok = lambda: True
     node.destroyed = False
     node.destroy_node = lambda: setattr(node, "destroyed", True) or True
 
@@ -171,10 +216,13 @@ def test_on_timer_runs_one_shot_cycle_and_destroys_node(monkeypatch):
     assert calls["detector_gateway"] is node._gateway
     assert calls["status_align_step"] is node._status_align
     assert calls["cfg"] is node._runner_cfg
-    assert calls["one_shot"] is True
     assert node.destroyed is True
+    assert shutdown_calls == [{}]
     assert node._logger.info_messages == [
-        "one-shot status align finished with algo_status=ALIGNED; stopping node"
+        (
+            "phase sequence stop requested reason=phase_sequence_complete "
+            "phase=STATUS_ALIGN algo_status=ALIGNED; stopping node"
+        )
     ]
 
 
@@ -198,17 +246,126 @@ def test_on_timer_publishes_zero_command_when_frame_read_fails():
             self.messages.append(message)
 
     node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
+    node._cfg = make_cfg()
     node._cap = FakeCapture()
     node._cmd_pub = FakeCmdPublisher()
     node._runner_cfg = SimpleNamespace(cmd_topic="/cmd_vel")
+    node._capture_read_fallback_attempted = True
     node._logger = FakeLogger()
     node.get_logger = lambda: node._logger
+    node._is_ros_context_ok = lambda: True
 
     node._on_timer()
 
     assert node._cmd_pub.messages == [{"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}]
     assert node._logger.warning_messages == [
         "Frame read failed; published zero velocity to /cmd_vel"
+    ]
+
+
+def test_on_timer_retries_numeric_camera_with_v4l2_mjpg_fallback(monkeypatch):
+    calls: dict[str, object] = {}
+
+    def fake_run_status_align_once(**kwargs):
+        calls.update(kwargs)
+        return SimpleNamespace(
+            stop_requested=False,
+            stop_reason="",
+            phase=Phase.STATUS_ALIGN.value,
+            algo_status=AlgoStatus.RUNNING.value,
+        )
+
+    class InitialCapture:
+        released = False
+
+        def read(self):
+            return False, None
+
+        def release(self) -> None:
+            self.released = True
+
+    class FallbackCapture:
+        set_calls: list[tuple[int, object]]
+
+        def __init__(self, source, backend=None) -> None:
+            calls["fallback_source"] = source
+            calls["fallback_backend"] = backend
+            self.set_calls = []
+
+        def isOpened(self) -> bool:
+            return True
+
+        def set(self, prop_id: int, value: object) -> None:
+            self.set_calls.append((prop_id, value))
+
+        def read(self):
+            return True, "fallback-frame"
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.phases: list[str] = []
+
+        def on_phase(self, phase: str) -> None:
+            self.phases.append(phase)
+
+    class FakeCmdPublisher:
+        def __init__(self) -> None:
+            self.messages: list[dict[str, float]] = []
+
+        def publish(self, message: dict[str, float]) -> None:
+            self.messages.append(message)
+
+    class FakeLogger:
+        def __init__(self) -> None:
+            self.warning_messages: list[str] = []
+
+        def warning(self, message: str) -> None:
+            self.warning_messages.append(message)
+
+    fake_cv2 = types.SimpleNamespace(
+        CAP_V4L2=200,
+        CAP_PROP_FOURCC=6,
+        CAP_PROP_FRAME_WIDTH=3,
+        CAP_PROP_FRAME_HEIGHT=4,
+        CAP_PROP_FPS=5,
+        VideoCapture=FallbackCapture,
+        VideoWriter_fourcc=lambda *chars: "FOURCC-" + "".join(chars),
+    )
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+    monkeypatch.setattr(ros_node, "run_status_align_once", fake_run_status_align_once)
+
+    initial_capture = InitialCapture()
+    node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
+    node._cfg = make_cfg()
+    node._runner_cfg = SimpleNamespace(
+        cmd_topic="/cmd_vel",
+        phase_sequence=(Phase.STATUS_ALIGN.value,),
+    )
+    node._cap = initial_capture
+    node._capture_read_fallback_attempted = False
+    node._cmd_pub = FakeCmdPublisher()
+    node._adapter = FakeAdapter()
+    node._gateway = object()
+    node._status_align = object()
+    node._logger = FakeLogger()
+    node.get_logger = lambda: node._logger
+    node._is_ros_context_ok = lambda: True
+
+    node._on_timer()
+
+    assert initial_capture.released is True
+    assert calls["fallback_source"] == 0
+    assert calls["fallback_backend"] == fake_cv2.CAP_V4L2
+    assert node._cap.set_calls == [
+        (fake_cv2.CAP_PROP_FOURCC, "FOURCC-MJPG"),
+        (fake_cv2.CAP_PROP_FRAME_WIDTH, 640),
+        (fake_cv2.CAP_PROP_FRAME_HEIGHT, 480),
+        (fake_cv2.CAP_PROP_FPS, 30),
+    ]
+    assert calls["frame"] == "fallback-frame"
+    assert node._cmd_pub.messages == []
+    assert node._logger.warning_messages == [
+        "Frame read failed; retrying camera 0 with V4L2 MJPG fallback"
     ]
 
 
@@ -269,7 +426,8 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
     assert captured["turtle_cmd_publisher"] is None
     assert node.logger.info_messages == [
         (
-            "starting pid_alignment_runner environment=robot one_shot=True "
+            "starting pid_alignment_runner environment=robot "
+            "phase_sequence=STATUS_ALIGN "
             "start_phase=STATUS_ALIGN input_source=0 status_profile=status_competition "
             "cmd_topic=/cmd_vel selected_status_topic=/robot_fetch/selected_target_px "
             "workflow_phase_topic=/workflow/phase algo_status_topic=/workflow/algo_status "
@@ -371,8 +529,16 @@ def test_main_loads_config_and_spins_node(monkeypatch):
     fake_cfg = make_cfg(environment="robot")
     created_nodes: list[object] = []
 
-    monkeypatch.setattr(ros_node.rclpy, "init", lambda: calls.append(("init", None)))
-    monkeypatch.setattr(ros_node.rclpy, "shutdown", lambda: calls.append(("shutdown", None)))
+    monkeypatch.setattr(
+        ros_node.rclpy,
+        "init",
+        lambda **kwargs: calls.append(("init", kwargs)),
+    )
+    monkeypatch.setattr(
+        ros_node.rclpy,
+        "try_shutdown",
+        lambda: calls.append(("try_shutdown", None)),
+    )
     monkeypatch.setattr(
         ros_node.rclpy,
         "spin",
@@ -398,10 +564,96 @@ def test_main_loads_config_and_spins_node(monkeypatch):
     ros_node.main(["--config", "configs/workflows/pid_alignment.turtle.yaml"])
 
     assert calls == [
-        ("init", None),
+        ("init", {"signal_handler_options": ros_node.SignalHandlerOptions.NO}),
         ("load", Path("configs/workflows/pid_alignment.turtle.yaml")),
         ("node_init", fake_cfg),
         ("spin", created_nodes[0]),
         ("destroy", None),
-        ("shutdown", None),
+        ("try_shutdown", None),
+    ]
+
+
+def test_main_handles_keyboard_interrupt_without_traceback(monkeypatch):
+    calls: list[tuple[str, object]] = []
+    fake_cfg = make_cfg(environment="robot")
+
+    monkeypatch.setattr(
+        ros_node.rclpy,
+        "init",
+        lambda **kwargs: calls.append(("init", kwargs)),
+    )
+    monkeypatch.setattr(
+        ros_node.rclpy,
+        "try_shutdown",
+        lambda: calls.append(("try_shutdown", None)),
+    )
+    monkeypatch.setattr(
+        ros_node.rclpy,
+        "spin",
+        lambda node: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(
+        ros_node,
+        "load_pid_alignment_config",
+        lambda path: calls.append(("load", Path(path))) or fake_cfg,
+    )
+
+    class FakePidAlignmentRosNode:
+        def __init__(self, *, cfg):
+            calls.append(("node_init", cfg))
+
+        def destroy_node(self):
+            calls.append(("destroy", None))
+            return True
+
+    monkeypatch.setattr(ros_node, "PidAlignmentRosNode", FakePidAlignmentRosNode)
+
+    ros_node.main(["--config", "configs/workflows/pid_alignment.robot.yaml"])
+
+    assert calls == [
+        ("init", {"signal_handler_options": ros_node.SignalHandlerOptions.NO}),
+        ("load", Path("configs/workflows/pid_alignment.robot.yaml")),
+        ("node_init", fake_cfg),
+        ("destroy", None),
+        ("try_shutdown", None),
+    ]
+
+
+def test_main_handles_rclpy_context_shutdown_during_interrupt(monkeypatch):
+    calls: list[tuple[str, object]] = []
+    fake_cfg = make_cfg(environment="robot")
+
+    monkeypatch.setattr(
+        ros_node.rclpy,
+        "init",
+        lambda **kwargs: calls.append(("init", kwargs)),
+    )
+    monkeypatch.setattr(ros_node.rclpy, "ok", lambda: False)
+    monkeypatch.setattr(
+        ros_node.rclpy,
+        "try_shutdown",
+        lambda: calls.append(("try_shutdown", None)),
+    )
+    monkeypatch.setattr(
+        ros_node,
+        "load_pid_alignment_config",
+        lambda path: calls.append(("load", Path(path))) or fake_cfg,
+    )
+
+    class FakePidAlignmentRosNode:
+        def __init__(self, *, cfg):
+            calls.append(("node_init", cfg))
+            raise ros_node.RCLError(
+                "failed to create timer: the given context is not valid"
+            )
+
+    monkeypatch.setattr(ros_node, "PidAlignmentRosNode", FakePidAlignmentRosNode)
+
+    ros_node.main(["--config", "configs/workflows/pid_alignment.robot.yaml"])
+
+    assert calls == [
+        ("init", {"signal_handler_options": ros_node.SignalHandlerOptions.NO}),
+        ("load", Path("configs/workflows/pid_alignment.robot.yaml")),
+        ("node_init", fake_cfg),
+        ("try_shutdown", None),
     ]
