@@ -245,15 +245,17 @@ def _build_capture_log_message(input_source: str, capture: Any) -> str:
     fourcc = _decode_fourcc(_capture_int_property(capture, cv2.CAP_PROP_FOURCC))
     frame_count_text = "unknown" if frame_count <= 0 else str(frame_count)
 
-    return (
-        "capture opened "
-        f"source={input_source} "
-        f"source_type={source_type} "
-        f"width={width} "
-        f"height={height} "
-        f"fps={fps:.3f} "
-        f"frame_count={frame_count_text} "
-        f"fourcc={fourcc}"
+    return _format_multiline_log(
+        "capture opened",
+        (
+            ("source", input_source),
+            ("source_type", source_type),
+            ("width", width),
+            ("height", height),
+            ("fps", f"{fps:.3f}"),
+            ("frame_count", frame_count_text),
+            ("fourcc", fourcc),
+        ),
     )
 
 
@@ -278,6 +280,32 @@ def _decode_fourcc(value: int) -> str:
     if not all(char.isprintable() and char.strip() for char in chars):
         return str(value)
     return "".join(chars)
+
+
+def _format_multiline_log(
+    title: str,
+    fields: tuple[tuple[str, object], ...],
+) -> str:
+    return "\n".join([title, *(f"  {key}={value}" for key, value in fields)])
+
+
+def _format_camera_fallback_log(
+    title: str,
+    *,
+    input_source: str,
+    config: CameraFallbackConfig,
+) -> str:
+    return _format_multiline_log(
+        title,
+        (
+            ("source", input_source),
+            ("backend", config.backend),
+            ("fourcc", config.fourcc),
+            ("width", config.width),
+            ("height", config.height),
+            ("fps", f"{config.fps:g}"),
+        ),
+    )
 
 
 class PidAlignmentRosNode(Node):
@@ -409,11 +437,14 @@ class PidAlignmentRosNode(Node):
                 node=self,
                 logger=self.get_logger(),
                 level="info",
-                message=(
-                    "phase sequence stop requested "
-                    f"reason={cycle.stop_reason} "
-                    f"phase={cycle.phase} "
-                    f"algo_status={cycle.algo_status}; stopping node"
+                message=_format_multiline_log(
+                    "phase sequence stop requested",
+                    (
+                        ("reason", cycle.stop_reason),
+                        ("phase", cycle.phase),
+                        ("algo_status", cycle.algo_status),
+                        ("action", "stopping_node"),
+                    ),
                 ),
             )
             self.destroy_node()
@@ -436,9 +467,10 @@ class PidAlignmentRosNode(Node):
                 node=self,
                 logger=self.get_logger(),
                 level="warning",
-                message=(
-                    "Frame read failed; trying camera fallback "
-                    f"source={input_source} {config.describe()}"
+                message=_format_camera_fallback_log(
+                    "Frame read failed; trying camera fallback",
+                    input_source=input_source,
+                    config=config,
                 ),
             )
             try:
@@ -451,8 +483,18 @@ class PidAlignmentRosNode(Node):
 
             shape = getattr(frame, "shape", None)
             self.get_logger().info(
-                "Camera fallback selected "
-                f"source={input_source} {selected_config.describe()} shape={shape}"
+                _format_multiline_log(
+                    "Camera fallback selected",
+                    (
+                        ("source", input_source),
+                        ("backend", selected_config.backend),
+                        ("fourcc", selected_config.fourcc),
+                        ("width", selected_config.width),
+                        ("height", selected_config.height),
+                        ("fps", f"{selected_config.fps:g}"),
+                        ("shape", shape),
+                    ),
+                )
             )
             return True, frame
 
@@ -466,21 +508,23 @@ class PidAlignmentRosNode(Node):
 
 
 def _build_startup_log_message(cfg: PidAlignmentWorkflowConfig) -> str:
-    return (
-        "starting pid_alignment_runner "
-        f"environment={cfg.environment} "
-        f"phase_sequence={','.join(cfg.phase_sequence)} "
-        f"start_phase={cfg.start_phase} "
-        f"input_source={cfg.detector.input_source} "
-        f"status_profile={cfg.detector.status_profile} "
-        f"cmd_topic={cfg.topics.cmd_topic} "
-        f"selected_status_topic={cfg.topics.selected_status_topic} "
-        f"workflow_phase_topic={cfg.topics.workflow_phase_topic} "
-        f"algo_status_topic={cfg.topics.algo_status_topic} "
-        f"env_status_topic={cfg.topics.env_status_topic} "
-        f"turtle_cmd_topic={cfg.adapter.turtle_cmd_topic} "
-        f"target_x={cfg.target_x:.3f} "
-        f"tolerance_px={cfg.tolerance_px:.3f}"
+    return _format_multiline_log(
+        "starting pid_alignment_runner",
+        (
+            ("environment", cfg.environment),
+            ("phase_sequence", ",".join(cfg.phase_sequence)),
+            ("start_phase", cfg.start_phase),
+            ("input_source", cfg.detector.input_source),
+            ("status_profile", cfg.detector.status_profile),
+            ("cmd_topic", cfg.topics.cmd_topic),
+            ("selected_status_topic", cfg.topics.selected_status_topic),
+            ("workflow_phase_topic", cfg.topics.workflow_phase_topic),
+            ("algo_status_topic", cfg.topics.algo_status_topic),
+            ("env_status_topic", cfg.topics.env_status_topic),
+            ("turtle_cmd_topic", cfg.adapter.turtle_cmd_topic),
+            ("target_x", f"{cfg.target_x:.3f}"),
+            ("tolerance_px", f"{cfg.tolerance_px:.3f}"),
+        ),
     )
 
 

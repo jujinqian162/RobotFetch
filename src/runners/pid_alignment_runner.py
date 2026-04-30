@@ -52,7 +52,9 @@ class DeduplicatingLogCache:
         key = (level, message)
         if key == self._last_key:
             self._repeat_count += 1
-            self.stream.write(f"\r(+{self._repeat_count})")
+            self.stream.write(
+                f"\r{_repeat_summary(message)} (+{self._repeat_count})"
+            )
             self.stream.flush()
             self._repeat_line_open = True
             return
@@ -224,24 +226,16 @@ def _log_status_align_cycle(
         node=node,
         logger=logger,
         level="info",
-        message=(
-            "status_align cycle "
-            f"phase={Phase.STATUS_ALIGN.value} "
-            f"detector_ready={bool(detection.ready)} "
-            f"frame_shape={_format_frame_shape(frame)} "
-            f"target_count={len(detection.targets)} "
-            f"targets={_format_status_targets(detection.targets)} "
-            f"target_x={cfg.target_x:.3f} "
-            f"selected_label={selected_label if selected_label is not None else 'None'} "
-            f"selected_cx={_format_optional_float(selected_cx)} "
-            f"error_px={_format_optional_float(error_px)} "
-            f"cmd_topic={cfg.cmd_topic} "
-            f"linear_x={cmd_message['linear_x']:.6f} "
-            f"linear_y={cmd_message['linear_y']:.6f} "
-            f"angular_z={cmd_message['angular_z']:.6f} "
-            f"algo_status={result.status.value} "
-            f"env_status={env_status} "
-            f"selected_status_topic={cfg.selected_status_topic}"
+        message=_format_status_align_cycle_log(
+            frame=frame,
+            cfg=cfg,
+            detection=detection,
+            result=result,
+            env_status=env_status,
+            cmd_message=cmd_message,
+            selected_label=selected_label,
+            selected_cx=selected_cx,
+            error_px=error_px,
         ),
     )
 
@@ -264,6 +258,48 @@ def _format_optional_float(value: object) -> str:
     return f"{float(value):.3f}"
 
 
+def _repeat_summary(message: str) -> str:
+    first_line = message.splitlines()[0] if message.splitlines() else message
+    return first_line or "<empty log>"
+
+
+def _format_status_align_cycle_log(
+    *,
+    frame: Any,
+    cfg: RunnerConfig,
+    detection: Any,
+    result: Any,
+    env_status: str,
+    cmd_message: dict[str, float],
+    selected_label: object,
+    selected_cx: object,
+    error_px: object,
+) -> str:
+    return "\n".join(
+        [
+            "status_align cycle",
+            f"  phase={Phase.STATUS_ALIGN.value}",
+            f"  detector_ready={bool(detection.ready)}",
+            f"  frame_shape={_format_frame_shape(frame)}",
+            f"  target_count={len(detection.targets)}",
+            "  targets=[",
+            *_format_status_target_lines(detection.targets),
+            "  ]",
+            f"  target_x={cfg.target_x:.3f}",
+            f"  selected_label={selected_label if selected_label is not None else 'None'}",
+            f"  selected_cx={_format_optional_float(selected_cx)}",
+            f"  error_px={_format_optional_float(error_px)}",
+            f"  cmd_topic={cfg.cmd_topic}",
+            f"  linear_x={cmd_message['linear_x']:.6f}",
+            f"  linear_y={cmd_message['linear_y']:.6f}",
+            f"  angular_z={cmd_message['angular_z']:.6f}",
+            f"  algo_status={result.status.value}",
+            f"  env_status={env_status}",
+            f"  selected_status_topic={cfg.selected_status_topic}",
+        ]
+    )
+
+
 def _format_frame_shape(frame: Any) -> str:
     shape = getattr(frame, "shape", None)
     if shape is None:
@@ -274,20 +310,21 @@ def _format_frame_shape(frame: Any) -> str:
         return str(shape)
 
 
-def _format_status_targets(targets: list[Any]) -> str:
-    parts: list[str] = []
-    for target in targets:
-        label = getattr(target, "label", "unknown")
-        target_id = getattr(target, "id", None)
-        id_suffix = "" if target_id is None else f"#{target_id}"
-        parts.append(
-            f"{label}{id_suffix}("
-            f"cx={_format_optional_float(getattr(target, 'cx', None))},"
-            f"cy={_format_optional_float(getattr(target, 'cy', None))},"
-            f"conf={_format_optional_float(getattr(target, 'conf', None))}"
-            ")"
-        )
-    return "[" + ",".join(parts) + "]"
+def _format_status_target_lines(targets: list[Any]) -> list[str]:
+    return [f"    {_format_status_target(target)}" for target in targets]
+
+
+def _format_status_target(target: Any) -> str:
+    label = getattr(target, "label", "unknown")
+    target_id = getattr(target, "id", None)
+    id_suffix = "" if target_id is None else f"#{target_id}"
+    return (
+        f"{label}{id_suffix}("
+        f"cx={_format_optional_float(getattr(target, 'cx', None))},"
+        f"cy={_format_optional_float(getattr(target, 'cy', None))},"
+        f"conf={_format_optional_float(getattr(target, 'conf', None))}"
+        ")"
+    )
 
 
 def build_default_status_align_step() -> StatusAlignStep:

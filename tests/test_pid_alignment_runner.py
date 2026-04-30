@@ -148,14 +148,14 @@ def test_run_status_align_once_publishes_running_command_and_statuses():
     assert harness.selected_target_pub.messages == [{"label": "palm", "cx": 300.0, "frame_id": "camera_link"}]
     assert len(harness.logger.info_messages) == 1
     assert "status_align cycle" in harness.logger.info_messages[0]
-    assert "detector_ready=True" in harness.logger.info_messages[0]
-    assert "target_count=1" in harness.logger.info_messages[0]
-    assert "selected_label=palm" in harness.logger.info_messages[0]
-    assert "selected_cx=300.000" in harness.logger.info_messages[0]
-    assert "error_px=20.000" in harness.logger.info_messages[0]
-    assert "cmd_topic=/cmd_vel" in harness.logger.info_messages[0]
-    assert "linear_y=0.200000" in harness.logger.info_messages[0]
-    assert "algo_status=RUNNING" in harness.logger.info_messages[0]
+    assert "\n  detector_ready=True" in harness.logger.info_messages[0]
+    assert "\n  target_count=1" in harness.logger.info_messages[0]
+    assert "\n  selected_label=palm" in harness.logger.info_messages[0]
+    assert "\n  selected_cx=300.000" in harness.logger.info_messages[0]
+    assert "\n  error_px=20.000" in harness.logger.info_messages[0]
+    assert "\n  cmd_topic=/cmd_vel" in harness.logger.info_messages[0]
+    assert "\n  linear_y=0.200000" in harness.logger.info_messages[0]
+    assert "\n  algo_status=RUNNING" in harness.logger.info_messages[0]
 
 
 
@@ -191,10 +191,10 @@ def test_run_status_align_once_publishes_ready_env_status_when_detector_not_read
     assert harness.cmd_pub.messages == [{"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}]
     assert harness.selected_target_pub.messages == []
     assert len(harness.logger.info_messages) == 1
-    assert "detector_ready=False" in harness.logger.info_messages[0]
-    assert "target_count=0" in harness.logger.info_messages[0]
-    assert "selected_label=None" in harness.logger.info_messages[0]
-    assert "algo_status=TARGET_LOST" in harness.logger.info_messages[0]
+    assert "\n  detector_ready=False" in harness.logger.info_messages[0]
+    assert "\n  target_count=0" in harness.logger.info_messages[0]
+    assert "\n  selected_label=None" in harness.logger.info_messages[0]
+    assert "\n  algo_status=TARGET_LOST" in harness.logger.info_messages[0]
 
 
 def test_run_status_align_once_logs_error_from_configured_target_x():
@@ -228,7 +228,7 @@ def test_run_status_align_once_logs_error_from_configured_target_x():
         cfg=cfg,
     )
 
-    assert "error_px=100.000" in harness.logger.info_messages[0]
+    assert "\n  error_px=100.000" in harness.logger.info_messages[0]
 
 
 def test_run_status_align_once_logs_frame_shape_and_all_status_targets():
@@ -257,9 +257,11 @@ def test_run_status_align_once_logs_frame_shape_and_all_status_targets():
     )
 
     log = harness.logger.info_messages[0]
-    assert "frame_shape=720x1280x3" in log
-    assert "targets=[spearhead#4(cx=210.000,cy=111.000,conf=0.820)" in log
-    assert "palm#5(cx=640.000,cy=220.000,conf=0.910)]" in log
+    assert "\n  frame_shape=720x1280x3" in log
+    assert "\n  targets=[" in log
+    assert "\n    spearhead#4(cx=210.000,cy=111.000,conf=0.820)" in log
+    assert "\n    palm#5(cx=640.000,cy=220.000,conf=0.910)" in log
+    assert "\n  ]" in log
 
 
 def test_deduplicating_log_cache_prints_repeated_count_without_full_log():
@@ -276,7 +278,7 @@ def test_deduplicating_log_cache_prints_repeated_count_without_full_log():
     cache.log(logger=logger, level="info", message="same message")
 
     assert logger.info_messages == ["same message"]
-    assert stream.chunks == ["\r(+1)", "\r(+2)"]
+    assert stream.chunks == ["\rsame message (+1)", "\rsame message (+2)"]
 
 
 def test_deduplicating_log_cache_starts_new_line_before_changed_log():
@@ -293,7 +295,7 @@ def test_deduplicating_log_cache_starts_new_line_before_changed_log():
     cache.log(logger=logger, level="info", message="different message")
 
     assert logger.info_messages == ["same message", "different message"]
-    assert stream.chunks == ["\r(+1)", "\n"]
+    assert stream.chunks == ["\rsame message (+1)", "\n"]
 
 
 def test_deduplicating_log_cache_allows_warning_then_info():
@@ -378,7 +380,10 @@ def test_run_status_align_once_deduplicates_consecutive_cycle_logs():
 
     assert len(harness.logger.info_messages) == 1
     assert "status_align cycle" in harness.logger.info_messages[0]
-    assert stream.chunks == ["\r(+1)", "\r(+2)"]
+    assert stream.chunks == [
+        "\rstatus_align cycle (+1)",
+        "\rstatus_align cycle (+2)",
+    ]
 
 
 

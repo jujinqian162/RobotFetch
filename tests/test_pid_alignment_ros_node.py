@@ -194,8 +194,14 @@ def test_build_capture_log_message_reports_camera_properties(monkeypatch):
     message = ros_node._build_capture_log_message("0", FakeCapture())
 
     assert message == (
-        "capture opened source=0 source_type=camera "
-        "width=1280 height=720 fps=30.000 frame_count=unknown fourcc=MJPG"
+        "capture opened\n"
+        "  source=0\n"
+        "  source_type=camera\n"
+        "  width=1280\n"
+        "  height=720\n"
+        "  fps=30.000\n"
+        "  frame_count=unknown\n"
+        "  fourcc=MJPG"
     )
 
 
@@ -223,8 +229,14 @@ def test_build_capture_log_message_reports_video_properties(monkeypatch):
     message = ros_node._build_capture_log_message("test-assets/test6.mp4", FakeCapture())
 
     assert message == (
-        "capture opened source=test-assets/test6.mp4 source_type=video "
-        "width=1920 height=1080 fps=59.940 frame_count=300 fourcc=unknown"
+        "capture opened\n"
+        "  source=test-assets/test6.mp4\n"
+        "  source_type=video\n"
+        "  width=1920\n"
+        "  height=1080\n"
+        "  fps=59.940\n"
+        "  frame_count=300\n"
+        "  fourcc=unknown"
     )
 
 
@@ -295,8 +307,11 @@ def test_on_timer_stops_when_phase_sequence_requests_stop(monkeypatch):
     assert shutdown_calls == [{}]
     assert node._logger.info_messages == [
         (
-            "phase sequence stop requested reason=phase_sequence_complete "
-            "phase=STATUS_ALIGN algo_status=ALIGNED; stopping node"
+            "phase sequence stop requested\n"
+            "  reason=phase_sequence_complete\n"
+            "  phase=STATUS_ALIGN\n"
+            "  algo_status=ALIGNED\n"
+            "  action=stopping_node"
         )
     ]
 
@@ -464,18 +479,34 @@ def test_on_timer_retries_numeric_camera_with_v4l2_mjpg_fallback(monkeypatch):
     assert node._cmd_pub.messages == []
     assert node._logger.warning_messages == [
         (
-            "Frame read failed; trying camera fallback source=0 "
-            "backend=v4l2 fourcc=MJPG width=1024 height=768 fps=190"
+            "Frame read failed; trying camera fallback\n"
+            "  source=0\n"
+            "  backend=v4l2\n"
+            "  fourcc=MJPG\n"
+            "  width=1024\n"
+            "  height=768\n"
+            "  fps=190"
         ),
         (
-            "Frame read failed; trying camera fallback source=0 "
-            "backend=v4l2 fourcc=MJPG width=800 height=600 fps=190"
+            "Frame read failed; trying camera fallback\n"
+            "  source=0\n"
+            "  backend=v4l2\n"
+            "  fourcc=MJPG\n"
+            "  width=800\n"
+            "  height=600\n"
+            "  fps=190"
         ),
     ]
     assert node._logger.info_messages == [
         (
-            "Camera fallback selected source=0 backend=v4l2 fourcc=MJPG "
-            "width=800 height=600 fps=190 shape=(600, 800, 3)"
+            "Camera fallback selected\n"
+            "  source=0\n"
+            "  backend=v4l2\n"
+            "  fourcc=MJPG\n"
+            "  width=800\n"
+            "  height=600\n"
+            "  fps=190\n"
+            "  shape=(600, 800, 3)"
         )
     ]
 
@@ -537,17 +568,30 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
     assert captured["turtle_cmd_publisher"] is None
     assert node.logger.info_messages == [
         (
-            "starting pid_alignment_runner environment=robot "
-            "phase_sequence=STATUS_ALIGN "
-            "start_phase=STATUS_ALIGN input_source=0 status_profile=status_competition "
-            "cmd_topic=/cmd_vel selected_status_topic=/robot_fetch/selected_target_px "
-            "workflow_phase_topic=/workflow/phase algo_status_topic=/workflow/algo_status "
-            "env_status_topic=/workflow/env_status turtle_cmd_topic=None "
-            "target_x=320.000 tolerance_px=8.000"
+            "starting pid_alignment_runner\n"
+            "  environment=robot\n"
+            "  phase_sequence=STATUS_ALIGN\n"
+            "  start_phase=STATUS_ALIGN\n"
+            "  input_source=0\n"
+            "  status_profile=status_competition\n"
+            "  cmd_topic=/cmd_vel\n"
+            "  selected_status_topic=/robot_fetch/selected_target_px\n"
+            "  workflow_phase_topic=/workflow/phase\n"
+            "  algo_status_topic=/workflow/algo_status\n"
+            "  env_status_topic=/workflow/env_status\n"
+            "  turtle_cmd_topic=None\n"
+            "  target_x=320.000\n"
+            "  tolerance_px=8.000"
         ),
         (
-            "capture opened source=0 source_type=camera "
-            "width=0 height=0 fps=0.000 frame_count=unknown fourcc=unknown"
+            "capture opened\n"
+            "  source=0\n"
+            "  source_type=camera\n"
+            "  width=0\n"
+            "  height=0\n"
+            "  fps=0.000\n"
+            "  frame_count=unknown\n"
+            "  fourcc=unknown"
         ),
     ]
 
