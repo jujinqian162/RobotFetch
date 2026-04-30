@@ -6,7 +6,9 @@ from typing import Any
 import yaml
 
 from .models import (
+    DEFAULT_CAMERA_FALLBACKS,
     AdapterConfig,
+    CameraFallbackConfig,
     DetectorConfig,
     PidAlignmentWorkflowConfig,
     TopicConfig,
@@ -91,6 +93,11 @@ def load_pid_alignment_config(
             input_source=_require_str_field(
                 detector,
                 "input_source",
+                parent="pid_alignment_workflow.detector",
+            ),
+            camera_fallbacks=_require_camera_fallbacks_field(
+                detector,
+                "camera_fallbacks",
                 parent="pid_alignment_workflow.detector",
             ),
         ),
@@ -183,11 +190,44 @@ def _require_phase_sequence_field(
     return tuple(value)
 
 
+def _require_int_field(mapping: dict[str, Any], key: str, *, parent: str) -> int:
+    value = _require_field(mapping, key, parent=parent)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{parent}.{key} must be an integer")
+    return value
+
+
 def _require_float_field(mapping: dict[str, Any], key: str, *, parent: str) -> float:
     value = _require_field(mapping, key, parent=parent)
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError(f"{parent}.{key} must be a number")
     return float(value)
+
+
+def _require_camera_fallbacks_field(
+    mapping: dict[str, Any], key: str, *, parent: str
+) -> tuple[CameraFallbackConfig, ...]:
+    if key not in mapping:
+        return DEFAULT_CAMERA_FALLBACKS
+    value = mapping[key]
+    if not isinstance(value, list):
+        raise TypeError(f"{parent}.{key} must be a list of camera fallback mappings")
+
+    fallbacks: list[CameraFallbackConfig] = []
+    for index, item in enumerate(value):
+        item_parent = f"{parent}.{key}[{index}]"
+        if not isinstance(item, dict):
+            raise TypeError(f"{item_parent} must be a mapping")
+        fallbacks.append(
+            CameraFallbackConfig(
+                backend=_require_str_field(item, "backend", parent=item_parent),
+                fourcc=_require_str_field(item, "fourcc", parent=item_parent),
+                width=_require_int_field(item, "width", parent=item_parent),
+                height=_require_int_field(item, "height", parent=item_parent),
+                fps=_require_float_field(item, "fps", parent=item_parent),
+            )
+        )
+    return tuple(fallbacks)
 
 
 def _require_path_field(

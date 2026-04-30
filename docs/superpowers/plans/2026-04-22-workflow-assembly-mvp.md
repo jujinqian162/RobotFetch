@@ -1,8 +1,8 @@
 # Workflow Assembly MVP Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Historical note:** This plan records the 2026-04-22 implementation approach. The current code has already implemented the MVP runner as `src/runners/pid_alignment_ros_node.py`, and current workflow configs use `phase_sequence: [STATUS_ALIGN]` rather than the older `one_shot` field shown in some original task snippets below.
 
-**Goal:** Assemble the existing refactored workflow, algorithm, and adapter pieces into a runnable `pid_alignment_runner` MVP that can start from `STATUS_ALIGN`, switch between `turtle` and `robot` environments, and support one-shot alignment tests.
+**Goal:** Assemble the existing refactored workflow, algorithm, and adapter pieces into a runnable `pid_alignment_runner` MVP that can start from `STATUS_ALIGN`, switch between `turtle` and `robot` environments, and support partial alignment tests.
 
 **Architecture:** Keep the current separation between workflow, algorithm, adapter, and runner layers. Add one thin config layer plus one ROS runtime wrapper so the existing pure modules stay reusable, while the runner becomes the single startup path for partial workflow testing.
 
@@ -635,7 +635,7 @@ python src/runners/pid_alignment_ros_node.py \
   --config configs/workflows/pid_alignment.robot.yaml
 ```
 
-One-shot mode is controlled in YAML with `one_shot: true`.
+Partial-test scope is controlled in YAML with `phase_sequence: [STATUS_ALIGN]`.
 Forward motion is not part of this MVP runner and remains deferred to the full mission runner.
 ````
 

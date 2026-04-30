@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  echo "Run this script instead of sourcing it: ./scripts/setup_dev_env.sh" >&2
+  return 1
+fi
+
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

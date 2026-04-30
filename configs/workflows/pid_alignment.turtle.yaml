@@ -24,6 +24,25 @@ pid_alignment_workflow:
     # OpenCV input source. "0" means camera index 0; a video file path can be used for replay.
     input_source: "0"
 
+    # Ordered fallback capture modes used when default OpenCV capture opens but frame reads fail.
+    # Reorder these entries when the model is sensitive to camera resolution/FPS.
+    camera_fallbacks:
+      - backend: v4l2
+        fourcc: MJPG
+        width: 640
+        height: 360
+        fps: 270.0
+      - backend: v4l2
+        fourcc: MJPG
+        width: 800
+        height: 600
+        fps: 190.0
+      - backend: v4l2
+        fourcc: MJPG
+        width: 1024
+        height: 768
+        fps: 190.0
+
   topics:
     # Workflow velocity command. In turtle mode this is also bridged to adapter.turtle_cmd_topic.
     cmd_topic: /cmd_vel

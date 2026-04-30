@@ -26,7 +26,7 @@ from algorithms.detector_gateway import DetectorGateway
 from algorithms.pid import PIDConfig
 from algorithms.status_align import StatusAlignConfig, StatusAlignStep
 from config.loaders import load_pid_alignment_config
-from config.models import PidAlignmentWorkflowConfig
+from config.models import CameraFallbackConfig, PidAlignmentWorkflowConfig
 from runners.pid_alignment_runner import (
     RunnerConfig,
     log_deduplicated,
@@ -174,20 +174,58 @@ def build_capture(input_source: str) -> Any:
     return capture
 
 
-def build_v4l2_mjpg_capture(input_source: str) -> Any:
+def build_v4l2_mjpg_capture(input_source: str, config: CameraFallbackConfig) -> Any:
     import cv2
 
     source = _resolve_input_source(input_source)
     if not isinstance(source, int):
         raise RuntimeError(f"V4L2 MJPG fallback requires numeric source: {input_source}")
+    if config.backend != "v4l2":
+        raise ValueError(f"Unsupported camera fallback backend: {config.backend}")
+
     capture = cv2.VideoCapture(source, cv2.CAP_V4L2)
-    capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    capture.set(cv2.CAP_PROP_FPS, 30)
+    if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
+    if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
+    capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*config.fourcc))
+    capture.set(cv2.CAP_PROP_FRAME_WIDTH, config.width)
+    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, config.height)
+    capture.set(cv2.CAP_PROP_FPS, config.fps)
     if hasattr(capture, "isOpened") and not capture.isOpened():
-        raise RuntimeError(f"Unable to open source with V4L2 MJPG fallback: {input_source}")
+        release = getattr(capture, "release", None)
+        if callable(release):
+            release()
+        raise RuntimeError(
+            "Unable to open source with camera fallback: "
+            f"{input_source} {config.describe()}"
+        )
     return capture
+
+
+def build_readable_v4l2_mjpg_capture(
+    input_source: str,
+    configs: tuple[CameraFallbackConfig, ...],
+) -> tuple[Any, Any, CameraFallbackConfig]:
+    last_error: Exception | None = None
+    for config in configs:
+        capture = None
+        try:
+            capture = build_v4l2_mjpg_capture(input_source, config)
+            ok, frame = capture.read()
+            if ok:
+                return capture, frame, config
+        except Exception as exc:
+            last_error = exc
+        if capture is not None:
+            release = getattr(capture, "release", None)
+            if callable(release):
+                release()
+
+    message = f"Unable to read from camera fallback source: {input_source}"
+    if last_error is not None:
+        message = f"{message}; last_error={last_error!r}"
+    raise RuntimeError(message)
 
 
 def _resolve_input_source(input_source: str) -> str | int:
@@ -340,20 +378,42 @@ class PidAlignmentRosNode(Node):
             return False, None
 
         self._capture_read_fallback_attempted = True
+        release = getattr(self._cap, "release", None)
+        if callable(release):
+            release()
+
+        for config in self._cfg.detector.camera_fallbacks:
+            log_deduplicated(
+                node=self,
+                logger=self.get_logger(),
+                level="warning",
+                message=(
+                    "Frame read failed; trying camera fallback "
+                    f"source={input_source} {config.describe()}"
+                ),
+            )
+            try:
+                self._cap, frame, selected_config = build_readable_v4l2_mjpg_capture(
+                    input_source,
+                    (config,),
+                )
+            except RuntimeError:
+                continue
+
+            shape = getattr(frame, "shape", None)
+            self.get_logger().info(
+                "Camera fallback selected "
+                f"source={input_source} {selected_config.describe()} shape={shape}"
+            )
+            return True, frame
+
         log_deduplicated(
             node=self,
             logger=self.get_logger(),
             level="warning",
-            message=(
-                "Frame read failed; retrying camera "
-                f"{input_source} with V4L2 MJPG fallback"
-            ),
+            message=f"All camera fallback configs failed for source={input_source}",
         )
-        release = getattr(self._cap, "release", None)
-        if callable(release):
-            release()
-        self._cap = build_v4l2_mjpg_capture(input_source)
-        return self._cap.read()
+        return False, None
 
 
 def _build_startup_log_message(cfg: PidAlignmentWorkflowConfig) -> str:

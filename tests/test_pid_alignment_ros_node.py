@@ -7,7 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import runners.pid_alignment_ros_node as ros_node
-from config.models import AdapterConfig, DetectorConfig, PidAlignmentWorkflowConfig, TopicConfig
+from config.models import (
+    AdapterConfig,
+    CameraFallbackConfig,
+    DetectorConfig,
+    PidAlignmentWorkflowConfig,
+    TopicConfig,
+)
 from workflow.types import AlgoStatus, Phase
 
 
@@ -15,6 +21,11 @@ def make_cfg(
     *,
     environment: str = "turtle",
     phase_sequence: tuple[str, ...] = (Phase.STATUS_ALIGN.value,),
+    camera_fallbacks: tuple[CameraFallbackConfig, ...] = (
+        CameraFallbackConfig("v4l2", "MJPG", 640, 360, 270.0),
+        CameraFallbackConfig("v4l2", "MJPG", 800, 600, 190.0),
+        CameraFallbackConfig("v4l2", "MJPG", 1024, 768, 190.0),
+    ),
 ) -> PidAlignmentWorkflowConfig:
     return PidAlignmentWorkflowConfig(
         environment=environment,
@@ -33,6 +44,7 @@ def make_cfg(
             sdk_config=Path("BaseDetect/configs/basedetect_sdk.yaml"),
             status_profile="status_competition",
             input_source="0",
+            camera_fallbacks=camera_fallbacks,
         ),
         adapter=AdapterConfig(
             turtle_cmd_topic="/turtle1/cmd_vel" if environment == "turtle" else None
@@ -265,6 +277,7 @@ def test_on_timer_publishes_zero_command_when_frame_read_fails():
 
 def test_on_timer_retries_numeric_camera_with_v4l2_mjpg_fallback(monkeypatch):
     calls: dict[str, object] = {}
+    fallback_captures: list[object] = []
 
     def fake_run_status_align_once(**kwargs):
         calls.update(kwargs)
@@ -288,18 +301,28 @@ def test_on_timer_retries_numeric_camera_with_v4l2_mjpg_fallback(monkeypatch):
         set_calls: list[tuple[int, object]]
 
         def __init__(self, source, backend=None) -> None:
-            calls["fallback_source"] = source
-            calls["fallback_backend"] = backend
+            self.source = source
+            self.backend = backend
             self.set_calls = []
+            self.width = None
+            self.released = False
+            fallback_captures.append(self)
 
         def isOpened(self) -> bool:
             return True
 
         def set(self, prop_id: int, value: object) -> None:
             self.set_calls.append((prop_id, value))
+            if prop_id == fake_cv2.CAP_PROP_FRAME_WIDTH:
+                self.width = value
 
         def read(self):
-            return True, "fallback-frame"
+            if self.width == 800:
+                return True, SimpleNamespace(shape=(600, 800, 3))
+            return False, None
+
+        def release(self) -> None:
+            self.released = True
 
     class FakeAdapter:
         def __init__(self) -> None:
@@ -317,7 +340,11 @@ def test_on_timer_retries_numeric_camera_with_v4l2_mjpg_fallback(monkeypatch):
 
     class FakeLogger:
         def __init__(self) -> None:
+            self.info_messages: list[str] = []
             self.warning_messages: list[str] = []
+
+        def info(self, message: str) -> None:
+            self.info_messages.append(message)
 
         def warning(self, message: str) -> None:
             self.warning_messages.append(message)
@@ -336,7 +363,12 @@ def test_on_timer_retries_numeric_camera_with_v4l2_mjpg_fallback(monkeypatch):
 
     initial_capture = InitialCapture()
     node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
-    node._cfg = make_cfg()
+    node._cfg = make_cfg(
+        camera_fallbacks=(
+            CameraFallbackConfig("v4l2", "MJPG", 1024, 768, 190.0),
+            CameraFallbackConfig("v4l2", "MJPG", 800, 600, 190.0),
+        )
+    )
     node._runner_cfg = SimpleNamespace(
         cmd_topic="/cmd_vel",
         phase_sequence=(Phase.STATUS_ALIGN.value,),
@@ -354,18 +386,34 @@ def test_on_timer_retries_numeric_camera_with_v4l2_mjpg_fallback(monkeypatch):
     node._on_timer()
 
     assert initial_capture.released is True
-    assert calls["fallback_source"] == 0
-    assert calls["fallback_backend"] == fake_cv2.CAP_V4L2
+    assert len(fallback_captures) == 2
+    assert fallback_captures[0].source == 0
+    assert fallback_captures[0].backend == fake_cv2.CAP_V4L2
+    assert fallback_captures[0].released is True
+    assert node._cap is fallback_captures[1]
     assert node._cap.set_calls == [
         (fake_cv2.CAP_PROP_FOURCC, "FOURCC-MJPG"),
-        (fake_cv2.CAP_PROP_FRAME_WIDTH, 640),
-        (fake_cv2.CAP_PROP_FRAME_HEIGHT, 480),
-        (fake_cv2.CAP_PROP_FPS, 30),
+        (fake_cv2.CAP_PROP_FRAME_WIDTH, 800),
+        (fake_cv2.CAP_PROP_FRAME_HEIGHT, 600),
+        (fake_cv2.CAP_PROP_FPS, 190.0),
     ]
-    assert calls["frame"] == "fallback-frame"
+    assert calls["frame"].shape == (600, 800, 3)
     assert node._cmd_pub.messages == []
     assert node._logger.warning_messages == [
-        "Frame read failed; retrying camera 0 with V4L2 MJPG fallback"
+        (
+            "Frame read failed; trying camera fallback source=0 "
+            "backend=v4l2 fourcc=MJPG width=1024 height=768 fps=190"
+        ),
+        (
+            "Frame read failed; trying camera fallback source=0 "
+            "backend=v4l2 fourcc=MJPG width=800 height=600 fps=190"
+        ),
+    ]
+    assert node._logger.info_messages == [
+        (
+            "Camera fallback selected source=0 backend=v4l2 fourcc=MJPG "
+            "width=800 height=600 fps=190 shape=(600, 800, 3)"
+        )
     ]
 
 

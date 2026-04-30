@@ -65,10 +65,18 @@
 
 ```text
 RobotFetch/
-  BaseDetect/
+  BaseDetect/                 # BaseDetect submodule / nested project
+  configs/workflows/          # runner workflow YAML configs
+  scripts/                    # environment setup and diagnostics
   src/
-    base_detect_demo_node.py
-    terminal_pid_follower_node.py
+    adapters/                 # environment-specific command adapters
+    algorithms/               # detector gateway, PID, target selection, status alignment
+    config/                   # strict YAML config loading
+    runners/                  # current runner-based ROS node entrypoints
+    workflow/                 # shared phase/status contract
+    base_detect_demo_node.py   # coordinate demo node
+    terminal_pid_follower_node.py  # legacy pre-refactor experiment path
+  tests/
   README.md
 ```
 
@@ -88,6 +96,8 @@ RobotFetch/
 - 项目根目录 `.venv`，并使用 `--system-site-packages` 复用 ROS 的 Python 包
 
 不要直接用 `conda` 里的 `python3` 运行本项目。当前代码会在同一个解释器里同时导入 `rclpy` 和 `basedetect`，最稳的做法是统一到系统 Python 3.12。
+
+确保 `BaseDetect/` 子项目已经存在并包含配置文件；如果是通过 git 子模块获取的仓库，先运行 `git submodule update --init --recursive`。
 
 首次初始化：
 

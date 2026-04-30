@@ -2,6 +2,8 @@
 
 Date: 2026-04-21
 
+> **Historical design note:** This document is the original refactor design. The current repository implements the STATUS_ALIGN MVP runner and adapters; `forward_approach.py`, `base_coord.py`, and `full_mission_runner.py` remain proposed/deferred modules, not current files.
+
 ## 1. Goal
 
 This refactor is intended to solve three practical problems in the current RobotFetch project:
@@ -194,9 +196,9 @@ The current monolithic `src/terminal_pid_follower_node.py` should be split into 
   - wrap BaseDetect profile switching and result access
 - `src/algorithms/status_align.py`
   - status alignment phase logic
-- `src/algorithms/forward_approach.py`
+- `src/algorithms/forward_approach.py` (proposed/deferred)
   - forward approach phase logic
-- `src/algorithms/base_coord.py`
+- `src/algorithms/base_coord.py` (proposed/deferred)
   - base-coordinate phase logic
 
 ### 7.3 Adapter modules
@@ -209,7 +211,8 @@ These modules are environment-specific and must remain free of mission logic.
 ### 7.4 Runner modules
 
 - `src/runners/pid_alignment_runner.py`
-- `src/runners/full_mission_runner.py`
+- `src/runners/pid_alignment_ros_node.py` (current STATUS_ALIGN MVP ROS entrypoint)
+- `src/runners/full_mission_runner.py` (proposed/deferred)
 
 ### 7.5 Optional config modules
 
@@ -321,8 +324,8 @@ Implementation should proceed in this order:
 5. build `pid_alignment_runner`
 6. connect `turtle_adapter`
 7. add `robot_adapter`
-8. implement `forward_approach.py`
-9. build `full_mission_runner`
+8. implement `forward_approach.py` (deferred after STATUS_ALIGN MVP)
+9. build `full_mission_runner` (deferred after STATUS_ALIGN MVP)
 
 This order prioritizes the user’s main need: fast and reliable partial testing before full competition integration.
 

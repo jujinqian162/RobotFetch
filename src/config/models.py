@@ -14,10 +14,33 @@ class TopicConfig:
 
 
 @dataclass(frozen=True)
+class CameraFallbackConfig:
+    backend: str
+    fourcc: str
+    width: int
+    height: int
+    fps: float
+
+    def describe(self) -> str:
+        return (
+            f"backend={self.backend} fourcc={self.fourcc} "
+            f"width={self.width} height={self.height} fps={self.fps:g}"
+        )
+
+
+DEFAULT_CAMERA_FALLBACKS = (
+    CameraFallbackConfig("v4l2", "MJPG", 640, 360, 270.0),
+    CameraFallbackConfig("v4l2", "MJPG", 800, 600, 190.0),
+    CameraFallbackConfig("v4l2", "MJPG", 1024, 768, 190.0),
+)
+
+
+@dataclass(frozen=True)
 class DetectorConfig:
     sdk_config: Path
     status_profile: str
     input_source: str
+    camera_fallbacks: tuple[CameraFallbackConfig, ...]
 
 
 @dataclass(frozen=True)
