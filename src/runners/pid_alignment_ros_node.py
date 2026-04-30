@@ -234,6 +234,52 @@ def _resolve_input_source(input_source: str) -> str | int:
     return input_source
 
 
+def _build_capture_log_message(input_source: str, capture: Any) -> str:
+    import cv2
+
+    source_type = "camera" if isinstance(_resolve_input_source(input_source), int) else "video"
+    width = _capture_int_property(capture, cv2.CAP_PROP_FRAME_WIDTH)
+    height = _capture_int_property(capture, cv2.CAP_PROP_FRAME_HEIGHT)
+    fps = _capture_float_property(capture, cv2.CAP_PROP_FPS)
+    frame_count = _capture_int_property(capture, cv2.CAP_PROP_FRAME_COUNT)
+    fourcc = _decode_fourcc(_capture_int_property(capture, cv2.CAP_PROP_FOURCC))
+    frame_count_text = "unknown" if frame_count <= 0 else str(frame_count)
+
+    return (
+        "capture opened "
+        f"source={input_source} "
+        f"source_type={source_type} "
+        f"width={width} "
+        f"height={height} "
+        f"fps={fps:.3f} "
+        f"frame_count={frame_count_text} "
+        f"fourcc={fourcc}"
+    )
+
+
+def _capture_float_property(capture: Any, prop_id: int) -> float:
+    getter = getattr(capture, "get", None)
+    if not callable(getter):
+        return 0.0
+    try:
+        return float(getter(prop_id))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _capture_int_property(capture: Any, prop_id: int) -> int:
+    return int(round(_capture_float_property(capture, prop_id)))
+
+
+def _decode_fourcc(value: int) -> str:
+    if value <= 0:
+        return "unknown"
+    chars = [chr((value >> (8 * index)) & 0xFF) for index in range(4)]
+    if not all(char.isprintable() and char.strip() for char in chars):
+        return str(value)
+    return "".join(chars)
+
+
 class PidAlignmentRosNode(Node):
     def __init__(self, *, cfg: PidAlignmentWorkflowConfig) -> None:
         super().__init__("pid_alignment_runner")
@@ -298,6 +344,9 @@ class PidAlignmentRosNode(Node):
         self._cap = build_capture(cfg.detector.input_source)
         self._timer = self.create_timer(0.1, self._on_timer)
         self.get_logger().info(_build_startup_log_message(cfg))
+        self.get_logger().info(
+            _build_capture_log_message(cfg.detector.input_source, self._cap)
+        )
 
     @property
     def cmd_pub(self) -> _TwistPublisher:

@@ -165,6 +165,69 @@ def test_build_capture_keeps_default_numeric_camera_open(monkeypatch):
     assert capture.set_calls == []
 
 
+def test_build_capture_log_message_reports_camera_properties(monkeypatch):
+    class FakeCapture:
+        def get(self, prop_id: int) -> float:
+            values = {
+                fake_cv2.CAP_PROP_FRAME_WIDTH: 1280.0,
+                fake_cv2.CAP_PROP_FRAME_HEIGHT: 720.0,
+                fake_cv2.CAP_PROP_FPS: 30.0,
+                fake_cv2.CAP_PROP_FRAME_COUNT: -1.0,
+                fake_cv2.CAP_PROP_FOURCC: float(
+                    ord("M")
+                    | (ord("J") << 8)
+                    | (ord("P") << 16)
+                    | (ord("G") << 24)
+                ),
+            }
+            return values[prop_id]
+
+    fake_cv2 = types.SimpleNamespace(
+        CAP_PROP_FRAME_WIDTH=3,
+        CAP_PROP_FRAME_HEIGHT=4,
+        CAP_PROP_FPS=5,
+        CAP_PROP_FRAME_COUNT=7,
+        CAP_PROP_FOURCC=6,
+    )
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+    message = ros_node._build_capture_log_message("0", FakeCapture())
+
+    assert message == (
+        "capture opened source=0 source_type=camera "
+        "width=1280 height=720 fps=30.000 frame_count=unknown fourcc=MJPG"
+    )
+
+
+def test_build_capture_log_message_reports_video_properties(monkeypatch):
+    class FakeCapture:
+        def get(self, prop_id: int) -> float:
+            values = {
+                fake_cv2.CAP_PROP_FRAME_WIDTH: 1920.0,
+                fake_cv2.CAP_PROP_FRAME_HEIGHT: 1080.0,
+                fake_cv2.CAP_PROP_FPS: 59.94,
+                fake_cv2.CAP_PROP_FRAME_COUNT: 300.0,
+                fake_cv2.CAP_PROP_FOURCC: 0.0,
+            }
+            return values[prop_id]
+
+    fake_cv2 = types.SimpleNamespace(
+        CAP_PROP_FRAME_WIDTH=3,
+        CAP_PROP_FRAME_HEIGHT=4,
+        CAP_PROP_FPS=5,
+        CAP_PROP_FRAME_COUNT=7,
+        CAP_PROP_FOURCC=6,
+    )
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+    message = ros_node._build_capture_log_message("test-assets/test6.mp4", FakeCapture())
+
+    assert message == (
+        "capture opened source=test-assets/test6.mp4 source_type=video "
+        "width=1920 height=1080 fps=59.940 frame_count=300 fourcc=unknown"
+    )
+
+
 def test_on_timer_stops_when_phase_sequence_requests_stop(monkeypatch):
     calls: dict[str, object] = {}
     shutdown_calls: list[object] = []
@@ -481,7 +544,11 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
             "workflow_phase_topic=/workflow/phase algo_status_topic=/workflow/algo_status "
             "env_status_topic=/workflow/env_status turtle_cmd_topic=None "
             "target_x=320.000 tolerance_px=8.000"
-        )
+        ),
+        (
+            "capture opened source=0 source_type=camera "
+            "width=0 height=0 fps=0.000 frame_count=unknown fourcc=unknown"
+        ),
     ]
 
 

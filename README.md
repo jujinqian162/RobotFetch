@@ -136,6 +136,26 @@ ros2 topic echo /robot_fetch/target_position
 2. 测试范围由 workflow YAML 中的 `phase_sequence` 控制；当前 MVP 配置为 `[STATUS_ALIGN]`，只跑对齐阶段。
 3. 前移阶段没有放进这个 MVP runner，后续由 full mission runner 接管。
 
+### `target_x` 和检测坐标到底是什么规格
+
+`status_align.target_x` 不是类别编号，也不是 YOLO 训练/推理尺寸里的归一化坐标；它是当前输入帧的像素 x 坐标。runner 做的比较是：
+
+```text
+error_px = status_align.target_x - selected_status_target.cx
+```
+
+`selected_status_target.cx` 来自 `BaseDetect/sdk/detector.py` 中 `result.boxes.xyxy` 的框中心点。当前代码把原始 `frame` 直接传给 Ultralytics `YOLO.track(...)`；即使模型内部 letterbox/resize 到类似 640 的推理尺寸，Ultralytics 返回的 `boxes.xyxy` 也是映射回传入帧的像素坐标。因此这里的 `cx/cy/width/height` 应按输入视频帧或摄像头帧来理解。
+
+这意味着：
+
+- 如果输入帧是 `640x480`，画面中心 x 通常是 `320`。
+- 如果输入视频是 `1280x720`，画面中心 x 通常是 `640`，继续写 `target_x: 320.0` 会让 PID 对齐到画面偏左位置。
+- 如果摄像头 fallback 改成了 `800x600`，中心 x 通常是 `400`。
+
+所以换摄像头、换视频文件、或调整 fallback 分辨率后，先看运行日志里的 `frame_shape=HxWxC`，再把 `status_align.target_x` 设置到这个宽度下的目标列。
+
+注意 status 类别名当前是 `spearhead`、`fist`、`palm`。如果你期望选中 `palm`，但日志始终显示选中 `spearhead`，先看同一行 `targets=[...]`：runner 会列出本帧所有检测到的端头 label、`cx/cy` 和置信度，然后再按 `|cx - target_x|` 选择最近的允许类别。
+
 当前部分验证的关键配置项在 workflow YAML 中：
 
 - `status_align.target_x`：状态模式下对齐目标像素 x

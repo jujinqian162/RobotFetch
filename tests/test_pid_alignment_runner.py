@@ -16,6 +16,11 @@ from runners.pid_alignment_runner import (
 class FakeStatusTarget:
     label: str
     cx: float
+    cy: float = 0.0
+    conf: float = 0.0
+    id: int | None = None
+    width: float = 0.0
+    height: float = 0.0
 
 
 @dataclass
@@ -224,6 +229,37 @@ def test_run_status_align_once_logs_error_from_configured_target_x():
     )
 
     assert "error_px=100.000" in harness.logger.info_messages[0]
+
+
+def test_run_status_align_once_logs_frame_shape_and_all_status_targets():
+    targets = [
+        FakeStatusTarget(label="spearhead", cx=210.0, cy=111.0, conf=0.82, id=4),
+        FakeStatusTarget(label="palm", cx=640.0, cy=220.0, conf=0.91, id=5),
+    ]
+    harness = FakeNodeHarness()
+    detector = FakeDetectorGateway(FakeDetectionBatch(ready=True, targets=targets))
+    step = FakeStatusAlignStep(
+        FakeStatusAlignResult(
+            status=AlgoStatus.RUNNING,
+            command_x=0.2,
+            selected_target=targets[1],
+            aligned=False,
+        )
+    )
+    frame = SimpleNamespace(shape=(720, 1280, 3))
+
+    run_status_align_once(
+        node=harness,
+        frame=frame,
+        detector_gateway=detector,
+        status_align_step=step,
+        cfg=DEFAULT_CONFIG,
+    )
+
+    log = harness.logger.info_messages[0]
+    assert "frame_shape=720x1280x3" in log
+    assert "targets=[spearhead#4(cx=210.000,cy=111.000,conf=0.820)" in log
+    assert "palm#5(cx=640.000,cy=220.000,conf=0.910)]" in log
 
 
 def test_deduplicating_log_cache_prints_repeated_count_without_full_log():

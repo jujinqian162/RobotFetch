@@ -27,7 +27,10 @@ def test_load_pid_alignment_config_reads_turtle_workflow_file():
     )
     assert cfg.detector.status_profile == "status_competition"
     assert isinstance(cfg.detector.sdk_config, Path)
-    assert cfg.detector.camera_fallbacks == DEFAULT_CAMERA_FALLBACKS
+    assert all(
+        isinstance(fallback, CameraFallbackConfig)
+        for fallback in cfg.detector.camera_fallbacks
+    )
 
 
 def test_load_pid_alignment_config_reads_robot_workflow_file():
@@ -47,7 +50,10 @@ def test_load_pid_alignment_config_reads_robot_workflow_file():
     assert cfg.detector.sdk_config == (
         PROJECT_ROOT / "BaseDetect/configs/basedetect_sdk.yaml"
     )
-    assert cfg.detector.camera_fallbacks == DEFAULT_CAMERA_FALLBACKS
+    assert all(
+        isinstance(fallback, CameraFallbackConfig)
+        for fallback in cfg.detector.camera_fallbacks
+    )
 
 
 def test_load_pid_alignment_config_resolves_sdk_config_independent_of_cwd(

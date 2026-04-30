@@ -120,6 +120,7 @@ def run_status_align_once(
         )
     _log_status_align_cycle(
         node=node,
+        frame=frame,
         cfg=cfg,
         detection=detection,
         result=result,
@@ -200,6 +201,7 @@ def _build_cmd_message(command_x: float) -> dict[str, float]:
 def _log_status_align_cycle(
     *,
     node: Any,
+    frame: Any,
     cfg: RunnerConfig,
     detection: Any,
     result: Any,
@@ -226,7 +228,10 @@ def _log_status_align_cycle(
             "status_align cycle "
             f"phase={Phase.STATUS_ALIGN.value} "
             f"detector_ready={bool(detection.ready)} "
+            f"frame_shape={_format_frame_shape(frame)} "
             f"target_count={len(detection.targets)} "
+            f"targets={_format_status_targets(detection.targets)} "
+            f"target_x={cfg.target_x:.3f} "
             f"selected_label={selected_label if selected_label is not None else 'None'} "
             f"selected_cx={_format_optional_float(selected_cx)} "
             f"error_px={_format_optional_float(error_px)} "
@@ -257,6 +262,32 @@ def _format_optional_float(value: object) -> str:
     if value is None:
         return "None"
     return f"{float(value):.3f}"
+
+
+def _format_frame_shape(frame: Any) -> str:
+    shape = getattr(frame, "shape", None)
+    if shape is None:
+        return "unknown"
+    try:
+        return "x".join(str(int(value)) for value in shape)
+    except (TypeError, ValueError):
+        return str(shape)
+
+
+def _format_status_targets(targets: list[Any]) -> str:
+    parts: list[str] = []
+    for target in targets:
+        label = getattr(target, "label", "unknown")
+        target_id = getattr(target, "id", None)
+        id_suffix = "" if target_id is None else f"#{target_id}"
+        parts.append(
+            f"{label}{id_suffix}("
+            f"cx={_format_optional_float(getattr(target, 'cx', None))},"
+            f"cy={_format_optional_float(getattr(target, 'cy', None))},"
+            f"conf={_format_optional_float(getattr(target, 'conf', None))}"
+            ")"
+        )
+    return "[" + ",".join(parts) + "]"
 
 
 def build_default_status_align_step() -> StatusAlignStep:
