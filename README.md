@@ -159,8 +159,10 @@ error_px = status_align.target_x - selected_status_target.cx
 当前部分验证的关键配置项在 workflow YAML 中：
 
 - `status_align.target_x`：状态模式下对齐目标像素 x
+- `status_align.max_speed`：状态对齐 PID 的速度输出上限；默认配置为 `0.25`
 - `phase_sequence`：本次要执行的阶段序列；单阶段测试可写 `[STATUS_ALIGN]`
 - `detector.status_profile`：status 检测 profile
+- `topics.publish_cmd_vel`：是否发布 workflow `cmd_topic`（通常是 `/cmd_vel`）；可设为 `false` 做只看状态/检测、不向底盘发速度的测试
 - `topics.selected_status_topic`：当前选中目标像素话题
 - `adapter.turtle_cmd_topic`：`environment: turtle` 时，将 runner 的 `/cmd_vel` 输出桥接为 turtlesim 可执行的速度话题
 
@@ -172,7 +174,7 @@ Turtle partial test:
 python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alignment.turtle.yaml
 ```
 
-This uses the same runner startup path as the robot config. In turtle mode, the node still publishes the workflow `/cmd_vel` message and also bridges it to `adapter.turtle_cmd_topic` so turtlesim can move without a separate bridge process.
+This uses the same runner startup path as the robot config. In turtle mode, the node publishes the workflow `/cmd_vel` message when `topics.publish_cmd_vel: true` and also bridges commands to `adapter.turtle_cmd_topic` so turtlesim can move without a separate bridge process.
 
 Real robot partial test:
 

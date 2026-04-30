@@ -7,6 +7,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class TopicConfig:
     cmd_topic: str
+    publish_cmd_vel: bool
     workflow_phase_topic: str
     algo_status_topic: str
     env_status_topic: str
@@ -55,6 +56,7 @@ class PidAlignmentWorkflowConfig:
     phase_sequence: tuple[str, ...]
     target_x: float
     tolerance_px: float
+    max_speed: float
     topics: TopicConfig
     detector: DetectorConfig
     adapter: AdapterConfig

@@ -55,9 +55,23 @@ def load_pid_alignment_config(
         tolerance_px=_require_float_field(
             status_align, "tolerance_px", parent="pid_alignment_workflow.status_align"
         ),
+        max_speed=abs(
+            _require_defaulted_float_field(
+                status_align,
+                "max_speed",
+                default=0.25,
+                parent="pid_alignment_workflow.status_align",
+            )
+        ),
         topics=TopicConfig(
             cmd_topic=_require_str_field(
                 topics, "cmd_topic", parent="pid_alignment_workflow.topics"
+            ),
+            publish_cmd_vel=_require_defaulted_bool_field(
+                topics,
+                "publish_cmd_vel",
+                default=True,
+                parent="pid_alignment_workflow.topics",
             ),
             workflow_phase_topic=_require_str_field(
                 topics,
@@ -166,6 +180,28 @@ def _require_defaulted_str_field(
     if not isinstance(value, str):
         raise TypeError(f"{parent}.{key} must be a string")
     return value
+
+
+def _require_defaulted_bool_field(
+    mapping: dict[str, Any], key: str, *, default: bool, parent: str
+) -> bool:
+    if key not in mapping:
+        return default
+    value = mapping[key]
+    if not isinstance(value, bool):
+        raise TypeError(f"{parent}.{key} must be a boolean")
+    return value
+
+
+def _require_defaulted_float_field(
+    mapping: dict[str, Any], key: str, *, default: float, parent: str
+) -> float:
+    if key not in mapping:
+        return default
+    value = mapping[key]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{parent}.{key} must be a number")
+    return float(value)
 
 
 def _require_phase_sequence_field(

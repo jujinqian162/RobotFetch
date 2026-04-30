@@ -19,7 +19,9 @@ def test_load_pid_alignment_config_reads_turtle_workflow_file():
     assert cfg.phase_sequence == ("STATUS_ALIGN",)
     assert cfg.target_x == 320.0
     assert cfg.tolerance_px == 8.0
+    assert cfg.max_speed == 0.25
     assert cfg.topics.cmd_topic == "/cmd_vel"
+    assert cfg.topics.publish_cmd_vel is True
     assert cfg.topics.workflow_phase_topic == "/workflow/phase"
     assert cfg.adapter.turtle_cmd_topic == "/turtle1/cmd_vel"
     assert cfg.detector.sdk_config == (
@@ -43,6 +45,8 @@ def test_load_pid_alignment_config_reads_robot_workflow_file():
     assert cfg.phase_sequence == ("STATUS_ALIGN",)
     assert cfg.target_x == 320.0
     assert cfg.tolerance_px == 8.0
+    assert cfg.max_speed == 0.25
+    assert cfg.topics.publish_cmd_vel is True
     assert cfg.topics.algo_status_topic == "/workflow/algo_status"
     assert cfg.topics.env_status_topic == "/workflow/env_status"
     assert cfg.topics.selected_status_topic == "/robot_fetch/selected_target_px"
@@ -130,6 +134,40 @@ pid_alignment_workflow:
     cfg = load_pid_alignment_config(config_path)
 
     assert cfg.phase_sequence == ("STATUS_ALIGN",)
+
+
+def test_load_pid_alignment_config_reads_speed_and_cmd_publish_switch(tmp_path: Path):
+    config_path = tmp_path / "pid_alignment.speed_and_publish.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    publish_cmd_vel: false
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+    max_speed: 0.12
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_pid_alignment_config(config_path)
+
+    assert cfg.max_speed == 0.12
+    assert cfg.topics.publish_cmd_vel is False
     assert cfg.detector.camera_fallbacks == DEFAULT_CAMERA_FALLBACKS
 
 

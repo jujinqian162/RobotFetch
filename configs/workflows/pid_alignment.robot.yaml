@@ -46,6 +46,7 @@ pid_alignment_workflow:
   topics:
     # Workflow velocity command. In robot mode the real base should subscribe here.
     cmd_topic: /cmd_vel
+    publish_cmd_vel: false
 
     # Current workflow phase as std_msgs/String, e.g. STATUS_ALIGN.
     workflow_phase_topic: /workflow/phase
@@ -70,3 +71,6 @@ pid_alignment_workflow:
 
     # Alignment succeeds when abs(target_x - selected_cx) is within this many pixels.
     tolerance_px: 8.0
+
+    # PID output limit for the workflow velocity command.
+    max_speed: 0.3

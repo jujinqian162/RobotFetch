@@ -68,20 +68,25 @@ class _WorkflowCommandPublisher:
     def __init__(
         self,
         *,
-        ros_publisher: Any,
+        ros_publisher: Any | None,
         message_type: type[Twist],
         adapter_cmd_handler: Callable[[Any], Any] | None = None,
     ) -> None:
         self._ros_publisher = ros_publisher
         self._message_type = message_type
         self._adapter_cmd_handler = adapter_cmd_handler
-        self._workflow_publisher = _TwistPublisher(
-            ros_publisher=ros_publisher,
-            message_type=message_type,
+        self._workflow_publisher = (
+            None
+            if ros_publisher is None
+            else _TwistPublisher(
+                ros_publisher=ros_publisher,
+                message_type=message_type,
+            )
         )
 
     def publish(self, payload: dict[str, float]) -> None:
-        self._workflow_publisher.publish(payload)
+        if self._workflow_publisher is not None:
+            self._workflow_publisher.publish(payload)
         if self._adapter_cmd_handler is None:
             return
         self._adapter_cmd_handler(_build_twist_message(payload))
@@ -150,7 +155,7 @@ def build_status_align_step(cfg: PidAlignmentWorkflowConfig) -> StatusAlignStep:
                 kp=0.006,
                 ki=0.0,
                 kd=0.0008,
-                output_limit=0.25,
+                output_limit=cfg.max_speed,
                 integral_limit=1000.0,
                 deadband=0.0,
                 derivative_alpha=0.35,
@@ -325,7 +330,11 @@ class PidAlignmentRosNode(Node):
             target_x=cfg.target_x,
         )
 
-        workflow_cmd_ros_publisher = self.create_publisher(Twist, cfg.topics.cmd_topic, 10)
+        workflow_cmd_ros_publisher = (
+            self.create_publisher(Twist, cfg.topics.cmd_topic, 10)
+            if cfg.topics.publish_cmd_vel
+            else None
+        )
         turtle_cmd_publisher: Callable[[dict[str, float]], None] | None = None
         if cfg.environment == "turtle" and cfg.adapter.turtle_cmd_topic:
             turtle_cmd_publisher = _TwistPublisher(

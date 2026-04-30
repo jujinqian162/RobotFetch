@@ -21,6 +21,8 @@ def make_cfg(
     *,
     environment: str = "turtle",
     phase_sequence: tuple[str, ...] = (Phase.STATUS_ALIGN.value,),
+    max_speed: float = 0.25,
+    publish_cmd_vel: bool = True,
     camera_fallbacks: tuple[CameraFallbackConfig, ...] = (
         CameraFallbackConfig("v4l2", "MJPG", 640, 360, 270.0),
         CameraFallbackConfig("v4l2", "MJPG", 800, 600, 190.0),
@@ -33,8 +35,10 @@ def make_cfg(
         phase_sequence=phase_sequence,
         target_x=320.0,
         tolerance_px=8.0,
+        max_speed=max_speed,
         topics=TopicConfig(
             cmd_topic="/cmd_vel",
+            publish_cmd_vel=publish_cmd_vel,
             workflow_phase_topic="/workflow/phase",
             algo_status_topic="/workflow/algo_status",
             env_status_topic="/workflow/env_status",
@@ -131,6 +135,12 @@ def test_build_adapter_returns_robot_adapter_for_robot_environment():
     )
 
     assert adapter.__class__.__name__ == "RobotAdapter"
+
+
+def test_build_status_align_step_uses_configured_max_speed():
+    step = ros_node.build_status_align_step(make_cfg(max_speed=0.12))
+
+    assert step._cfg.pid.output_limit == 0.12
 
 
 def test_build_capture_keeps_default_numeric_camera_open(monkeypatch):
@@ -665,6 +675,69 @@ def test_pid_alignment_ros_node_bridges_runner_cmd_to_turtle_topic(monkeypatch):
     assert turtle_messages[0].linear.x == 0.18
     assert turtle_messages[0].linear.y == 0.0
     assert turtle_messages[0].angular.z == 0.25
+
+
+def test_pid_alignment_ros_node_can_disable_workflow_cmd_vel_publish(monkeypatch):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+    publishers: dict[str, object] = {}
+
+    class FakeRosPublisher:
+        def __init__(self, topic: str) -> None:
+            self.topic = topic
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    class FakeCapture:
+        def read(self):
+            return False, None
+
+        def release(self) -> None:
+            return None
+
+    def fake_create_publisher(self, msg_type, topic, qos_depth):
+        publisher = FakeRosPublisher(topic)
+        publishers[topic] = publisher
+        return publisher
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        fake_create_publisher,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_timer",
+        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        raising=False,
+    )
+    monkeypatch.setattr(fake_ros_node, "build_capture", lambda input_source: FakeCapture())
+    monkeypatch.setattr(
+        fake_ros_node,
+        "DetectorGateway",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        fake_ros_node,
+        "build_status_align_step",
+        lambda cfg: SimpleNamespace(cfg=cfg),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(
+        cfg=make_cfg(environment="turtle", publish_cmd_vel=False)
+    )
+    node.cmd_pub.publish(
+        {
+            "linear_x": 0.0,
+            "linear_y": 0.18,
+            "angular_z": 0.25,
+        }
+    )
+
+    assert "/cmd_vel" not in publishers
+    assert len(publishers["/turtle1/cmd_vel"].messages) == 1
 
 
 def test_parse_args_defaults_config_path_from_worktree_root():
