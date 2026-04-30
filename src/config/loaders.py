@@ -10,6 +10,7 @@ from .models import (
     AdapterConfig,
     CameraFallbackConfig,
     DetectorConfig,
+    ForwardApproachConfig,
     PidAlignmentWorkflowConfig,
     TopicConfig,
 )
@@ -30,6 +31,9 @@ def load_pid_alignment_config(
     adapter = _require_mapping_field(root, "adapter", parent="pid_alignment_workflow")
     status_align = _require_mapping_field(
         root, "status_align", parent="pid_alignment_workflow"
+    )
+    forward_approach = _optional_mapping_field(
+        root, "forward_approach", parent="pid_alignment_workflow"
     )
 
     start_phase = _require_defaulted_str_field(
@@ -62,6 +66,20 @@ def load_pid_alignment_config(
                 default=0.25,
                 parent="pid_alignment_workflow.status_align",
             )
+        ),
+        forward_approach=ForwardApproachConfig(
+            speed_mps=_require_positive_defaulted_float_field(
+                forward_approach,
+                "speed_mps",
+                default=0.1,
+                parent="pid_alignment_workflow.forward_approach",
+            ),
+            distance_m=_require_positive_defaulted_float_field(
+                forward_approach,
+                "distance_m",
+                default=0.2,
+                parent="pid_alignment_workflow.forward_approach",
+            ),
         ),
         topics=TopicConfig(
             cmd_topic=_require_str_field(
@@ -141,6 +159,17 @@ def _require_mapping_field(
     return value
 
 
+def _optional_mapping_field(
+    mapping: dict[str, Any], key: str, *, parent: str = "config"
+) -> dict[str, Any]:
+    if key not in mapping:
+        return {}
+    value = mapping[key]
+    if not isinstance(value, dict):
+        raise TypeError(f"{parent}.{key} must be a mapping")
+    return value
+
+
 def _require_field(mapping: dict[str, Any], key: str, *, parent: str) -> Any:
     if key not in mapping:
         raise KeyError(f"Missing required config field: {parent}.{key}")
@@ -202,6 +231,20 @@ def _require_defaulted_float_field(
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError(f"{parent}.{key} must be a number")
     return float(value)
+
+
+def _require_positive_defaulted_float_field(
+    mapping: dict[str, Any], key: str, *, default: float, parent: str
+) -> float:
+    value = _require_defaulted_float_field(
+        mapping,
+        key,
+        default=default,
+        parent=parent,
+    )
+    if value <= 0.0:
+        raise ValueError(f"{parent}.{key} must be greater than 0")
+    return value
 
 
 def _require_phase_sequence_field(

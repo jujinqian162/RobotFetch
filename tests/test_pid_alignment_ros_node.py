@@ -11,6 +11,7 @@ from config.models import (
     AdapterConfig,
     CameraFallbackConfig,
     DetectorConfig,
+    ForwardApproachConfig,
     PidAlignmentWorkflowConfig,
     TopicConfig,
 )
@@ -20,6 +21,7 @@ from workflow.types import AlgoStatus, Phase
 def make_cfg(
     *,
     environment: str = "turtle",
+    start_phase: str = Phase.STATUS_ALIGN.value,
     phase_sequence: tuple[str, ...] = (Phase.STATUS_ALIGN.value,),
     max_speed: float = 0.25,
     publish_cmd_vel: bool = True,
@@ -31,11 +33,12 @@ def make_cfg(
 ) -> PidAlignmentWorkflowConfig:
     return PidAlignmentWorkflowConfig(
         environment=environment,
-        start_phase=Phase.STATUS_ALIGN.value,
+        start_phase=start_phase,
         phase_sequence=phase_sequence,
         target_x=320.0,
         tolerance_px=8.0,
         max_speed=max_speed,
+        forward_approach=ForwardApproachConfig(speed_mps=0.12, distance_m=0.3),
         topics=TopicConfig(
             cmd_topic="/cmd_vel",
             publish_cmd_vel=publish_cmd_vel,
@@ -591,7 +594,9 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
             "  env_status_topic=/workflow/env_status\n"
             "  turtle_cmd_topic=None\n"
             "  target_x=320.000\n"
-            "  tolerance_px=8.000"
+            "  tolerance_px=8.000\n"
+            "  forward_approach_speed_mps=0.120\n"
+            "  forward_approach_distance_m=0.300"
         ),
         (
             "capture opened\n"
@@ -602,6 +607,94 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
             "  fps=0.000\n"
             "  frame_count=unknown\n"
             "  fourcc=unknown"
+        ),
+    ]
+
+
+def test_pid_alignment_ros_node_skips_detector_and_capture_when_starting_forward(
+    monkeypatch,
+):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+    calls: dict[str, int] = {
+        "capture": 0,
+        "gateway": 0,
+        "status_align": 0,
+    }
+
+    class FakeRosPublisher:
+        def __init__(self) -> None:
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        lambda self, msg_type, topic, qos_depth: FakeRosPublisher(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_timer",
+        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        raising=False,
+    )
+
+    def fail_build_capture(input_source):
+        calls["capture"] += 1
+        raise AssertionError("FORWARD_APPROACH startup must not open capture")
+
+    def fail_gateway(**kwargs):
+        calls["gateway"] += 1
+        raise AssertionError("FORWARD_APPROACH startup must not build detector gateway")
+
+    def fail_status_align(cfg):
+        calls["status_align"] += 1
+        raise AssertionError("FORWARD_APPROACH startup must not build status align")
+
+    monkeypatch.setattr(fake_ros_node, "build_capture", fail_build_capture)
+    monkeypatch.setattr(fake_ros_node, "DetectorGateway", fail_gateway)
+    monkeypatch.setattr(fake_ros_node, "build_status_align_step", fail_status_align)
+    monkeypatch.setattr(
+        fake_ros_node,
+        "build_adapter",
+        lambda **kwargs: SimpleNamespace(on_cmd_vel=lambda message: None, on_phase=lambda phase: None),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(
+        cfg=make_cfg(
+            environment="robot",
+            start_phase=Phase.FORWARD_APPROACH.value,
+            phase_sequence=(Phase.FORWARD_APPROACH.value,),
+        )
+    )
+
+    assert node._active_phase == Phase.FORWARD_APPROACH
+    assert calls == {"capture": 0, "gateway": 0, "status_align": 0}
+    assert node.logger.info_messages == [
+        (
+            "starting pid_alignment_runner\n"
+            "  environment=robot\n"
+            "  phase_sequence=FORWARD_APPROACH\n"
+            "  start_phase=FORWARD_APPROACH\n"
+            "  input_source=0\n"
+            "  status_profile=status_competition\n"
+            "  cmd_topic=/cmd_vel\n"
+            "  selected_status_topic=/robot_fetch/selected_target_px\n"
+            "  workflow_phase_topic=/workflow/phase\n"
+            "  algo_status_topic=/workflow/algo_status\n"
+            "  env_status_topic=/workflow/env_status\n"
+            "  turtle_cmd_topic=None\n"
+            "  target_x=320.000\n"
+            "  tolerance_px=8.000\n"
+            "  forward_approach_speed_mps=0.120\n"
+            "  forward_approach_distance_m=0.300"
+        ),
+        (
+            "capture startup skipped\n"
+            "  reason=start_phase_does_not_require_status_align\n"
+            "  start_phase=FORWARD_APPROACH"
         ),
     ]
 

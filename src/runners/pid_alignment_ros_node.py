@@ -30,8 +30,10 @@ from config.models import CameraFallbackConfig, PidAlignmentWorkflowConfig
 from runners.pid_alignment_runner import (
     RunnerConfig,
     log_deduplicated,
+    run_forward_approach_once,
     run_status_align_once,
 )
+from workflow.types import Phase, parse_phase
 
 
 ZERO_CMD_MESSAGE = {"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}
@@ -328,7 +330,10 @@ class PidAlignmentRosNode(Node):
             frame_id="camera_link",
             phase_sequence=cfg.phase_sequence,
             target_x=cfg.target_x,
+            forward_approach_speed_mps=cfg.forward_approach.speed_mps,
+            forward_approach_distance_m=cfg.forward_approach.distance_m,
         )
+        self._active_phase = parse_phase(cfg.start_phase)
 
         workflow_cmd_ros_publisher = (
             self.create_publisher(Twist, cfg.topics.cmd_topic, 10)
@@ -373,17 +378,32 @@ class PidAlignmentRosNode(Node):
                 self._adapter.on_cmd_vel if cfg.environment == "turtle" else None
             ),
         )
-        self._gateway = DetectorGateway(
-            config_path=cfg.detector.sdk_config,
-            initial_profile=cfg.detector.status_profile,
-        )
-        self._status_align = build_status_align_step(cfg)
-        self._cap = build_capture(cfg.detector.input_source)
+        self._gateway = None
+        self._status_align = None
+        self._cap = None
+        if self._active_phase == Phase.STATUS_ALIGN:
+            self._gateway = DetectorGateway(
+                config_path=cfg.detector.sdk_config,
+                initial_profile=cfg.detector.status_profile,
+            )
+            self._status_align = build_status_align_step(cfg)
+            self._cap = build_capture(cfg.detector.input_source)
         self._timer = self.create_timer(0.1, self._on_timer)
         self.get_logger().info(_build_startup_log_message(cfg))
-        self.get_logger().info(
-            _build_capture_log_message(cfg.detector.input_source, self._cap)
-        )
+        if self._cap is None:
+            self.get_logger().info(
+                _format_multiline_log(
+                    "capture startup skipped",
+                    (
+                        ("reason", "start_phase_does_not_require_status_align"),
+                        ("start_phase", self._active_phase.value),
+                    ),
+                )
+            )
+        else:
+            self.get_logger().info(
+                _build_capture_log_message(cfg.detector.input_source, self._cap)
+            )
 
     @property
     def cmd_pub(self) -> _TwistPublisher:
@@ -417,6 +437,16 @@ class PidAlignmentRosNode(Node):
         return super().destroy_node()
 
     def _on_timer(self) -> None:
+        active_phase = getattr(self, "_active_phase", Phase.STATUS_ALIGN)
+        if active_phase == Phase.FORWARD_APPROACH:
+            self._adapter.on_phase(Phase.FORWARD_APPROACH.value)
+            cycle = run_forward_approach_once(
+                node=self,
+                cfg=self._runner_cfg,
+            )
+            self._handle_cycle_stop_if_requested(cycle)
+            return
+
         ok, frame = self._cap.read()
         if not ok:
             ok, frame = self._try_read_with_capture_fallback()
@@ -442,22 +472,43 @@ class PidAlignmentRosNode(Node):
             cfg=self._runner_cfg,
         )
         if cycle.stop_requested:
+            self._handle_cycle_stop_if_requested(cycle)
+            return
+        if getattr(cycle, "next_phase", None) == Phase.FORWARD_APPROACH.value:
+            self._active_phase = Phase.FORWARD_APPROACH
             log_deduplicated(
                 node=self,
                 logger=self.get_logger(),
                 level="info",
                 message=_format_multiline_log(
-                    "phase sequence stop requested",
+                    "phase sequence advancing",
                     (
-                        ("reason", cycle.stop_reason),
-                        ("phase", cycle.phase),
+                        ("from_phase", cycle.phase),
+                        ("to_phase", cycle.next_phase),
                         ("algo_status", cycle.algo_status),
-                        ("action", "stopping_node"),
                     ),
                 ),
             )
-            self.destroy_node()
-            rclpy.try_shutdown()
+
+    def _handle_cycle_stop_if_requested(self, cycle: Any) -> None:
+        if not getattr(cycle, "stop_requested", False):
+            return
+        log_deduplicated(
+            node=self,
+            logger=self.get_logger(),
+            level="info",
+            message=_format_multiline_log(
+                "phase sequence stop requested",
+                (
+                    ("reason", cycle.stop_reason),
+                    ("phase", cycle.phase),
+                    ("algo_status", cycle.algo_status),
+                    ("action", "stopping_node"),
+                ),
+            ),
+        )
+        self.destroy_node()
+        rclpy.try_shutdown()
 
     def _try_read_with_capture_fallback(self) -> tuple[bool, Any]:
         input_source = self._cfg.detector.input_source
@@ -533,6 +584,8 @@ def _build_startup_log_message(cfg: PidAlignmentWorkflowConfig) -> str:
             ("turtle_cmd_topic", cfg.adapter.turtle_cmd_topic),
             ("target_x", f"{cfg.target_x:.3f}"),
             ("tolerance_px", f"{cfg.tolerance_px:.3f}"),
+            ("forward_approach_speed_mps", f"{cfg.forward_approach.speed_mps:.3f}"),
+            ("forward_approach_distance_m", f"{cfg.forward_approach.distance_m:.3f}"),
         ),
     )
 

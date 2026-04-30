@@ -5,13 +5,11 @@ pid_alignment_workflow:
   environment: robot
 
   # First phase to enter when this runner starts.
-  # Current MVP runner implements STATUS_ALIGN only.
   start_phase: STATUS_ALIGN
 
   # Ordered phases to execute for this run.
   # Use a single-item sequence for isolated phase testing, e.g. [STATUS_ALIGN].
-  # Future full mission configs can extend this to [STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD]
-  # after those phase runners are implemented.
+  # Add FORWARD_APPROACH after STATUS_ALIGN to move forward by a fixed distance.
   phase_sequence: [STATUS_ALIGN]
 
   detector:
@@ -74,3 +72,10 @@ pid_alignment_workflow:
 
     # PID output limit for the workflow velocity command.
     max_speed: 0.3
+
+  forward_approach:
+    # Open-loop forward speed after STATUS_ALIGN succeeds.
+    speed_mps: 0.08
+
+    # Fixed forward distance. Runtime duration is distance_m / speed_mps.
+    distance_m: 0.2

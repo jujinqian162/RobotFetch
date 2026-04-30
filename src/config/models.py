@@ -50,6 +50,12 @@ class AdapterConfig:
 
 
 @dataclass(frozen=True)
+class ForwardApproachConfig:
+    speed_mps: float
+    distance_m: float
+
+
+@dataclass(frozen=True)
 class PidAlignmentWorkflowConfig:
     environment: str
     start_phase: str
@@ -57,6 +63,7 @@ class PidAlignmentWorkflowConfig:
     target_x: float
     tolerance_px: float
     max_speed: float
+    forward_approach: ForwardApproachConfig
     topics: TopicConfig
     detector: DetectorConfig
     adapter: AdapterConfig

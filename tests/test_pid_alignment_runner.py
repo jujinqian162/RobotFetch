@@ -8,6 +8,7 @@ from runners.pid_alignment_runner import (
     DeduplicatingLogCache,
     PidAlignmentRunnerNode,
     RunnerConfig,
+    run_forward_approach_once,
     run_status_align_once,
 )
 
@@ -488,7 +489,7 @@ def test_status_align_reports_unimplemented_next_sequence_phase():
         algo_status_topic="/workflow/algo_status",
         env_status_topic="/workflow/env_status",
         frame_id="camera_link",
-        phase_sequence=(Phase.STATUS_ALIGN.value, Phase.FORWARD_APPROACH.value),
+        phase_sequence=(Phase.STATUS_ALIGN.value, Phase.BASE_COORD.value),
     )
 
     cycle = run_status_align_once(
@@ -500,4 +501,124 @@ def test_status_align_reports_unimplemented_next_sequence_phase():
     )
 
     assert cycle.stop_requested is True
-    assert cycle.stop_reason == "next_phase_not_implemented:FORWARD_APPROACH"
+    assert cycle.stop_reason == "next_phase_not_implemented:BASE_COORD"
+
+
+def test_status_align_advances_to_forward_approach_when_configured_next():
+    harness = FakeNodeHarness()
+    target = FakeStatusTarget(label="palm", cx=320.0)
+    detector = FakeDetectorGateway(FakeDetectionBatch(ready=True, targets=[target]))
+    step = FakeStatusAlignStep(
+        FakeStatusAlignResult(
+            status=AlgoStatus.ALIGNED,
+            command_x=0.0,
+            selected_target=target,
+            aligned=True,
+        )
+    )
+    cfg = RunnerConfig(
+        cmd_topic="/cmd_vel",
+        selected_status_topic="/robot_fetch/selected_target_px",
+        workflow_phase_topic="/workflow/phase",
+        algo_status_topic="/workflow/algo_status",
+        env_status_topic="/workflow/env_status",
+        frame_id="camera_link",
+        phase_sequence=(Phase.STATUS_ALIGN.value, Phase.FORWARD_APPROACH.value),
+    )
+
+    cycle = run_status_align_once(
+        node=harness,
+        frame=object(),
+        detector_gateway=detector,
+        status_align_step=step,
+        cfg=cfg,
+    )
+
+    assert cycle.stop_requested is False
+    assert cycle.stop_reason is None
+    assert cycle.next_phase == Phase.FORWARD_APPROACH.value
+
+
+def test_run_forward_approach_once_publishes_forward_until_duration():
+    harness = FakeNodeHarness(clock=FakeClock(10.0))
+    cfg = RunnerConfig(
+        cmd_topic="/cmd_vel",
+        selected_status_topic="/robot_fetch/selected_target_px",
+        workflow_phase_topic="/workflow/phase",
+        algo_status_topic="/workflow/algo_status",
+        env_status_topic="/workflow/env_status",
+        frame_id="camera_link",
+        phase_sequence=(Phase.STATUS_ALIGN.value, Phase.FORWARD_APPROACH.value),
+        forward_approach_speed_mps=0.2,
+        forward_approach_distance_m=0.6,
+    )
+
+    cycle = run_forward_approach_once(node=harness, cfg=cfg)
+
+    assert cycle.phase == Phase.FORWARD_APPROACH.value
+    assert cycle.algo_status == AlgoStatus.RUNNING.value
+    assert cycle.env_status == EnvStatus.RUNNING.value
+    assert cycle.command_x == 0.2
+    assert cycle.stop_requested is False
+    assert harness.cmd_pub.messages == [
+        {"linear_x": 0.2, "linear_y": 0.0, "angular_z": 0.0}
+    ]
+    assert harness.phase_pub.messages == [Phase.FORWARD_APPROACH.value]
+    assert harness.algo_status_pub.messages == [AlgoStatus.RUNNING.value]
+    assert harness.env_status_pub.messages == [EnvStatus.RUNNING.value]
+    assert "\n  duration_s=3.000" in harness.logger.info_messages[0]
+    assert "\n  remaining_s=3.000" in harness.logger.info_messages[0]
+
+
+def test_run_forward_approach_once_stops_after_duration():
+    harness = FakeNodeHarness(clock=FakeClock(13.1))
+    harness._forward_approach_started_s = 10.0
+    cfg = RunnerConfig(
+        cmd_topic="/cmd_vel",
+        selected_status_topic="/robot_fetch/selected_target_px",
+        workflow_phase_topic="/workflow/phase",
+        algo_status_topic="/workflow/algo_status",
+        env_status_topic="/workflow/env_status",
+        frame_id="camera_link",
+        phase_sequence=(Phase.STATUS_ALIGN.value, Phase.FORWARD_APPROACH.value),
+        forward_approach_speed_mps=0.2,
+        forward_approach_distance_m=0.6,
+    )
+
+    cycle = run_forward_approach_once(node=harness, cfg=cfg)
+
+    assert cycle.algo_status == AlgoStatus.STEP_DONE.value
+    assert cycle.env_status == EnvStatus.DONE.value
+    assert cycle.command_x == 0.0
+    assert cycle.stop_requested is True
+    assert cycle.stop_reason == "phase_sequence_complete"
+    assert harness.cmd_pub.messages == [
+        {"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}
+    ]
+    assert "\n  elapsed_s=3.100" in harness.logger.info_messages[0]
+    assert "\n  remaining_s=0.000" in harness.logger.info_messages[0]
+
+
+def test_run_forward_approach_once_reports_unimplemented_next_phase():
+    harness = FakeNodeHarness(clock=FakeClock(13.1))
+    harness._forward_approach_started_s = 10.0
+    cfg = RunnerConfig(
+        cmd_topic="/cmd_vel",
+        selected_status_topic="/robot_fetch/selected_target_px",
+        workflow_phase_topic="/workflow/phase",
+        algo_status_topic="/workflow/algo_status",
+        env_status_topic="/workflow/env_status",
+        frame_id="camera_link",
+        phase_sequence=(
+            Phase.STATUS_ALIGN.value,
+            Phase.FORWARD_APPROACH.value,
+            Phase.BASE_COORD.value,
+        ),
+        forward_approach_speed_mps=0.2,
+        forward_approach_distance_m=0.6,
+    )
+
+    cycle = run_forward_approach_once(node=harness, cfg=cfg)
+
+    assert cycle.stop_requested is True
+    assert cycle.stop_reason == "next_phase_not_implemented:BASE_COORD"

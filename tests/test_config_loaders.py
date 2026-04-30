@@ -21,6 +21,8 @@ def test_load_pid_alignment_config_reads_turtle_workflow_file():
     assert cfg.tolerance_px == 8.0
     assert isinstance(cfg.max_speed, float)
     assert cfg.max_speed > 0.0
+    assert cfg.forward_approach.speed_mps == 0.12
+    assert cfg.forward_approach.distance_m == 0.3
     assert cfg.topics.cmd_topic == "/cmd_vel"
     assert cfg.topics.publish_cmd_vel is True
     assert cfg.topics.workflow_phase_topic == "/workflow/phase"
@@ -48,6 +50,8 @@ def test_load_pid_alignment_config_reads_robot_workflow_file():
     assert cfg.tolerance_px == 8.0
     assert isinstance(cfg.max_speed, float)
     assert cfg.max_speed > 0.0
+    assert cfg.forward_approach.speed_mps == 0.08
+    assert cfg.forward_approach.distance_m == 0.2
     assert isinstance(cfg.topics.publish_cmd_vel, bool)
     assert cfg.topics.algo_status_topic == "/workflow/algo_status"
     assert cfg.topics.env_status_topic == "/workflow/env_status"
@@ -162,6 +166,9 @@ pid_alignment_workflow:
     target_x: 320.0
     tolerance_px: 8.0
     max_speed: 0.12
+  forward_approach:
+    speed_mps: 0.11
+    distance_m: 0.44
 """.strip(),
         encoding="utf-8",
     )
@@ -169,8 +176,46 @@ pid_alignment_workflow:
     cfg = load_pid_alignment_config(config_path)
 
     assert cfg.max_speed == 0.12
+    assert cfg.forward_approach.speed_mps == 0.11
+    assert cfg.forward_approach.distance_m == 0.44
     assert cfg.topics.publish_cmd_vel is False
     assert cfg.detector.camera_fallbacks == DEFAULT_CAMERA_FALLBACKS
+
+
+def test_load_pid_alignment_config_rejects_zero_forward_approach_speed(
+    tmp_path: Path,
+):
+    config_path = tmp_path / "pid_alignment.invalid_forward_speed.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  phase_sequence: [STATUS_ALIGN, FORWARD_APPROACH]
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+  forward_approach:
+    speed_mps: 0.0
+    distance_m: 0.2
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="forward_approach.speed_mps"):
+        load_pid_alignment_config(config_path)
 
 
 def test_load_pid_alignment_config_reads_ordered_camera_fallbacks(tmp_path: Path):

@@ -2,15 +2,15 @@ pid_alignment_workflow:
   # Runtime target:
   # - turtle: publish normal workflow topics and bridge /cmd_vel to turtlesim.
   # - robot: publish normal workflow topics only; the real base should consume cmd_topic.
-  environment: turtle
+  environment: robot
 
   # First phase to enter when this runner starts.
-  start_phase: STATUS_ALIGN
+  start_phase: FORWARD_APPROACH 
 
   # Ordered phases to execute for this run.
   # Use a single-item sequence for isolated phase testing, e.g. [STATUS_ALIGN].
   # Add FORWARD_APPROACH after STATUS_ALIGN to move forward by a fixed distance.
-  phase_sequence: [STATUS_ALIGN]
+  phase_sequence: [FORWARD_APPROACH]
 
   detector:
     # BaseDetect SDK config path, relative to the RobotFetch project root unless absolute.
@@ -27,14 +27,14 @@ pid_alignment_workflow:
     camera_fallbacks:
       - backend: v4l2
         fourcc: MJPG
-        width: 640
-        height: 360
-        fps: 270.0
-      - backend: v4l2
-        fourcc: MJPG
         width: 800
         height: 600
         fps: 190.0
+      - backend: v4l2
+        fourcc: MJPG
+        width: 640
+        height: 360
+        fps: 270.0
       - backend: v4l2
         fourcc: MJPG
         width: 1024
@@ -42,9 +42,9 @@ pid_alignment_workflow:
         fps: 190.0
 
   topics:
-    # Workflow velocity command. In turtle mode this is also bridged to adapter.turtle_cmd_topic.
+    # Workflow velocity command. In robot mode the real base should subscribe here.
     cmd_topic: /cmd_vel
-    publish_cmd_vel: true
+    publish_cmd_vel: false
 
     # Current workflow phase as std_msgs/String, e.g. STATUS_ALIGN.
     workflow_phase_topic: /workflow/phase
@@ -60,8 +60,8 @@ pid_alignment_workflow:
 
   adapter:
     # turtlesim command topic. Used only when environment is turtle.
-    # Set to null for robot configs.
-    turtle_cmd_topic: /turtle1/cmd_vel
+    # Keep null for robot configs.
+    turtle_cmd_topic: null
 
   status_align:
     # Desired image x-coordinate for alignment, in pixels.
@@ -71,11 +71,11 @@ pid_alignment_workflow:
     tolerance_px: 8.0
 
     # PID output limit for the workflow velocity command.
-    max_speed: 0.25
+    max_speed: 0.3
 
   forward_approach:
     # Open-loop forward speed after STATUS_ALIGN succeeds.
-    speed_mps: 0.12
+    speed_mps: 0.5
 
     # Fixed forward distance. Runtime duration is distance_m / speed_mps.
-    distance_m: 0.3
+    distance_m: 0.4

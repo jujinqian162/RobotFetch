@@ -29,6 +29,8 @@ class RunnerConfig:
     frame_id: str
     phase_sequence: tuple[str, ...] = (Phase.STATUS_ALIGN.value,)
     target_x: float = 320.0
+    forward_approach_speed_mps: float = 0.1
+    forward_approach_distance_m: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,7 @@ class StatusAlignCycleResult:
     command_x: float
     stop_requested: bool
     stop_reason: str | None
+    next_phase: str | None = None
 
 
 @dataclass
@@ -91,7 +94,28 @@ def stop_reason_after_status_align(
     next_index = status_index + 1
     if next_index >= len(phase_sequence):
         return "phase_sequence_complete"
-    return f"next_phase_not_implemented:{phase_sequence[next_index]}"
+    next_phase = phase_sequence[next_index]
+    if next_phase == Phase.FORWARD_APPROACH.value:
+        return None
+    return f"next_phase_not_implemented:{next_phase}"
+
+
+def next_phase_after_status_align(
+    *, phase_sequence: tuple[str, ...], algo_status: AlgoStatus
+) -> str | None:
+    if algo_status != AlgoStatus.ALIGNED:
+        return None
+    try:
+        status_index = phase_sequence.index(Phase.STATUS_ALIGN.value)
+    except ValueError:
+        return None
+    next_index = status_index + 1
+    if next_index >= len(phase_sequence):
+        return None
+    next_phase = phase_sequence[next_index]
+    if next_phase == Phase.FORWARD_APPROACH.value:
+        return next_phase
+    return None
 
 
 def run_status_align_once(
@@ -133,11 +157,82 @@ def run_status_align_once(
         phase_sequence=cfg.phase_sequence,
         algo_status=result.status,
     )
+    next_phase = next_phase_after_status_align(
+        phase_sequence=cfg.phase_sequence,
+        algo_status=result.status,
+    )
     return StatusAlignCycleResult(
         phase=Phase.STATUS_ALIGN.value,
         algo_status=result.status.value,
         env_status=env_status,
         command_x=result.command_x,
+        stop_requested=stop_reason is not None,
+        stop_reason=stop_reason,
+        next_phase=next_phase,
+    )
+
+
+def stop_reason_after_forward_approach(
+    *, phase_sequence: tuple[str, ...], algo_status: AlgoStatus
+) -> str | None:
+    if algo_status != AlgoStatus.STEP_DONE:
+        return None
+    try:
+        forward_index = phase_sequence.index(Phase.FORWARD_APPROACH.value)
+    except ValueError:
+        return "phase_sequence_missing_forward_approach"
+    next_index = forward_index + 1
+    if next_index >= len(phase_sequence):
+        return "phase_sequence_complete"
+    return f"next_phase_not_implemented:{phase_sequence[next_index]}"
+
+
+def run_forward_approach_once(
+    *,
+    node: Any,
+    cfg: RunnerConfig,
+) -> StatusAlignCycleResult:
+    now_s = node.get_clock().now().nanoseconds * 1e-9
+    start_s = getattr(node, "_forward_approach_started_s", None)
+    if start_s is None:
+        start_s = now_s
+        setattr(node, "_forward_approach_started_s", start_s)
+
+    duration_s = cfg.forward_approach_distance_m / cfg.forward_approach_speed_mps
+    elapsed_s = max(0.0, now_s - float(start_s))
+    done = elapsed_s >= duration_s
+    command_x = 0.0 if done else cfg.forward_approach_speed_mps
+    cmd_message = {
+        "linear_x": command_x,
+        "linear_y": 0.0,
+        "angular_z": 0.0,
+    }
+    algo_status = AlgoStatus.STEP_DONE if done else AlgoStatus.RUNNING
+    env_status = EnvStatus.DONE if done else EnvStatus.RUNNING
+
+    node.cmd_pub.publish(cmd_message)
+    node.phase_pub.publish(Phase.FORWARD_APPROACH.value)
+    node.algo_status_pub.publish(algo_status.value)
+    node.env_status_pub.publish(env_status.value)
+    _log_forward_approach_cycle(
+        node=node,
+        cfg=cfg,
+        duration_s=duration_s,
+        elapsed_s=elapsed_s,
+        remaining_s=max(0.0, duration_s - elapsed_s),
+        cmd_message=cmd_message,
+        algo_status=algo_status,
+        env_status=env_status,
+    )
+    stop_reason = stop_reason_after_forward_approach(
+        phase_sequence=cfg.phase_sequence,
+        algo_status=algo_status,
+    )
+    return StatusAlignCycleResult(
+        phase=Phase.FORWARD_APPROACH.value,
+        algo_status=algo_status.value,
+        env_status=env_status.value,
+        command_x=command_x,
         stop_requested=stop_reason is not None,
         stop_reason=stop_reason,
     )
@@ -155,6 +250,7 @@ class PidAlignmentRunnerNode:
         self._status_align_step = status_align_step
         self._runner_cfg = runner_cfg
         self._phase_controller = PhaseController(start_phase=Phase.STATUS_ALIGN)
+        self._active_phase = Phase.STATUS_ALIGN
         self._cmd_pub: Any = None
         self._phase_pub: Any = None
         self._algo_status_pub: Any = None
@@ -182,14 +278,22 @@ class PidAlignmentRunnerNode:
         return self._selected_target_pub
 
     def run_once(self, *, frame: Any) -> StatusAlignCycleResult:
+        active_phase = getattr(self, "_active_phase", Phase.STATUS_ALIGN)
+        if active_phase == Phase.FORWARD_APPROACH:
+            self._phase_controller.enter_phase(Phase.FORWARD_APPROACH)
+            return run_forward_approach_once(node=self, cfg=self._runner_cfg)
+
         self._phase_controller.enter_phase(Phase.STATUS_ALIGN)
-        return run_status_align_once(
+        cycle = run_status_align_once(
             node=self,
             frame=frame,
             detector_gateway=self._detector_gateway,
             status_align_step=self._status_align_step,
             cfg=self._runner_cfg,
         )
+        if cycle.next_phase == Phase.FORWARD_APPROACH.value:
+            self._active_phase = Phase.FORWARD_APPROACH
+        return cycle
 
 
 def _build_cmd_message(command_x: float) -> dict[str, float]:
@@ -236,6 +340,49 @@ def _log_status_align_cycle(
             selected_label=selected_label,
             selected_cx=selected_cx,
             error_px=error_px,
+        ),
+    )
+
+
+def _log_forward_approach_cycle(
+    *,
+    node: Any,
+    cfg: RunnerConfig,
+    duration_s: float,
+    elapsed_s: float,
+    remaining_s: float,
+    cmd_message: dict[str, float],
+    algo_status: AlgoStatus,
+    env_status: EnvStatus,
+) -> None:
+    get_logger = getattr(node, "get_logger", None)
+    if not callable(get_logger):
+        return
+    logger = get_logger()
+    info = getattr(logger, "info", None)
+    if not callable(info):
+        return
+
+    log_deduplicated(
+        node=node,
+        logger=logger,
+        level="info",
+        message="\n".join(
+            [
+                "forward_approach cycle",
+                f"  phase={Phase.FORWARD_APPROACH.value}",
+                f"  speed_mps={cfg.forward_approach_speed_mps:.3f}",
+                f"  distance_m={cfg.forward_approach_distance_m:.3f}",
+                f"  duration_s={duration_s:.3f}",
+                f"  elapsed_s={elapsed_s:.3f}",
+                f"  remaining_s={remaining_s:.3f}",
+                f"  cmd_topic={cfg.cmd_topic}",
+                f"  linear_x={cmd_message['linear_x']:.6f}",
+                f"  linear_y={cmd_message['linear_y']:.6f}",
+                f"  angular_z={cmd_message['angular_z']:.6f}",
+                f"  algo_status={algo_status.value}",
+                f"  env_status={env_status.value}",
+            ]
         ),
     )
 

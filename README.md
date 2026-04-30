@@ -118,8 +118,8 @@ source ./scripts/activate_dev_env.sh
 这个 runner 仍然覆盖 status 模式下的核心链路：
 
 1. `status` 模式：按 `|cx - target_x|` 最小选择目标，PID 仅做横向对齐。
-2. 测试范围由 workflow YAML 中的 `phase_sequence` 控制；当前 MVP 配置为 `[STATUS_ALIGN]`，只跑对齐阶段。
-3. 前移阶段没有放进这个 MVP runner，后续由 full mission runner 接管。
+2. 测试范围由 workflow YAML 中的 `phase_sequence` 控制；只想验证对齐时写 `[STATUS_ALIGN]`。
+3. 需要对齐后前移时写 `[STATUS_ALIGN, FORWARD_APPROACH]`。前移阶段不做 PID，也不依赖视觉闭环，而是按 `forward_approach.distance_m / forward_approach.speed_mps` 计算持续时间，持续发布固定前进速度，到时后发布零速并结束该阶段。
 
 ### `target_x` 和检测坐标到底是什么规格
 
@@ -146,6 +146,8 @@ error_px = status_align.target_x - selected_status_target.cx
 - `status_align.target_x`：状态模式下对齐目标像素 x
 - `status_align.max_speed`：状态对齐 PID 的速度输出上限，具体值以当前 workflow YAML 为准
 - `phase_sequence`：本次要执行的阶段序列；单阶段测试可写 `[STATUS_ALIGN]`
+- `forward_approach.speed_mps`：`FORWARD_APPROACH` 阶段的固定前进速度，必须大于 0
+- `forward_approach.distance_m`：`FORWARD_APPROACH` 阶段的固定前进距离，必须大于 0
 - `detector.status_profile`：status 检测 profile
 - `topics.publish_cmd_vel`：是否发布 workflow `cmd_topic`（通常是 `/cmd_vel`）；可设为 `false` 做只看状态/检测、不向底盘发速度的测试
 - `topics.selected_status_topic`：当前选中目标像素话题
@@ -168,7 +170,7 @@ python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alig
 ```
 
 The test scope is controlled in YAML with `phase_sequence`. Current partial-test configs use `phase_sequence: [STATUS_ALIGN]`.
-Forward motion is deferred to the full mission runner and is not part of this MVP runner.
+To include the open-loop forward motion after alignment, set `phase_sequence: [STATUS_ALIGN, FORWARD_APPROACH]` and tune `forward_approach.speed_mps` / `forward_approach.distance_m` in the same YAML.
 
 ## 测试
 
