@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROS_ROOT="${ROS_ROOT:-/opt/ros}"
@@ -49,10 +48,17 @@ if ! ROS_SETUP="$(resolve_ros_setup)"; then
 fi
 
 if [[ -f "$ROS_SETUP" ]]; then
+  had_nounset=0
+  case $- in
+    *u*) had_nounset=1 ;;
+  esac
   set +u
   # shellcheck disable=SC1090
   source "$ROS_SETUP"
-  set -u
+  if [[ "$had_nounset" -eq 1 ]]; then
+    set -u
+  fi
+  unset had_nounset
 else
   echo "ROS setup script not found: $ROS_SETUP" >&2
   echo "Tip: set ROS_SETUP or ROS_DISTRO_HINT (e.g. humble)." >&2
