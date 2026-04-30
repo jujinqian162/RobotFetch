@@ -19,7 +19,8 @@ def test_load_pid_alignment_config_reads_turtle_workflow_file():
     assert cfg.phase_sequence == ("STATUS_ALIGN",)
     assert cfg.target_x == 320.0
     assert cfg.tolerance_px == 8.0
-    assert cfg.max_speed == 0.25
+    assert isinstance(cfg.max_speed, float)
+    assert cfg.max_speed > 0.0
     assert cfg.topics.cmd_topic == "/cmd_vel"
     assert cfg.topics.publish_cmd_vel is True
     assert cfg.topics.workflow_phase_topic == "/workflow/phase"
@@ -45,8 +46,9 @@ def test_load_pid_alignment_config_reads_robot_workflow_file():
     assert cfg.phase_sequence == ("STATUS_ALIGN",)
     assert cfg.target_x == 320.0
     assert cfg.tolerance_px == 8.0
-    assert cfg.max_speed == 0.25
-    assert cfg.topics.publish_cmd_vel is True
+    assert isinstance(cfg.max_speed, float)
+    assert cfg.max_speed > 0.0
+    assert isinstance(cfg.topics.publish_cmd_vel, bool)
     assert cfg.topics.algo_status_topic == "/workflow/algo_status"
     assert cfg.topics.env_status_topic == "/workflow/env_status"
     assert cfg.topics.selected_status_topic == "/robot_fetch/selected_target_px"

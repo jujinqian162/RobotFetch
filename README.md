@@ -74,35 +74,30 @@ RobotFetch/
     config/                   # strict YAML config loading
     runners/                  # current runner-based ROS node entrypoints
     workflow/                 # shared phase/status contract
-    base_detect_demo_node.py   # coordinate demo node
     terminal_pid_follower_node.py  # legacy pre-refactor experiment path
   tests/
   README.md
 ```
 
-## 这个示例做了什么
-
-- 从 `BaseDetect/configs/camera.yaml` 读取相机与目标参数
-- 调用 `basedetect.coord3d.pixel_to_3d` 估计 3D 坐标
-- 以 ROS 2 话题发布 `/robot_fetch/target_position` (`geometry_msgs/msg/PointStamped`)
-
 ## 环境准备
 
-推荐环境：
+推荐环境是 Linux + ROS 2 + 系统 Python。不要把 Python 版本或 ROS 发行版写死到命令里：ROS 2 Humble、Jazzy 等发行版对应的 Python 版本可能不同，项目脚本会优先使用当前环境能找到的 ROS setup 和 `python3`。
 
-- Ubuntu 24.04
-- ROS 2 Jazzy
-- `/usr/bin/python3.12`
-- 项目根目录 `.venv`，并使用 `--system-site-packages` 复用 ROS 的 Python 包
-
-不要直接用 `conda` 里的 `python3` 运行本项目。当前代码会在同一个解释器里同时导入 `rclpy` 和 `basedetect`，最稳的做法是统一到系统 Python 3.12。
+不要直接用 `conda` 里的 `python3` 运行本项目。当前代码会在同一个解释器里同时导入 `rclpy` 和 `basedetect`，最稳的做法是使用 ROS 环境对应的系统 Python，并让虚拟环境通过 `--system-site-packages` 复用 ROS 的 Python 包。
 
 确保 `BaseDetect/` 子项目已经存在并包含配置文件；如果是通过 git 子模块获取的仓库，先运行 `git submodule update --init --recursive`。
 
-首次初始化：
+第一次准备环境时运行：
 
 ```bash
 ./scripts/setup_dev_env.sh
+```
+
+脚本会自动查找 `/opt/ros/<distro>/setup.bash` 和可用的 `python3`。如果机器上有多个 ROS 发行版，或 ROS 安装在非默认目录，可以显式指定：
+
+```bash
+ROS_SETUP=/opt/ros/<distro>/setup.bash ./scripts/setup_dev_env.sh
+PYTHON_BIN=/path/to/python3 ./scripts/setup_dev_env.sh
 ```
 
 之后每次进入项目，先激活环境：
@@ -113,17 +108,7 @@ source ./scripts/activate_dev_env.sh
 
 ## 运行方式
 
-环境激活后，在 `RobotFetch/` 下直接运行：
-
-```bash
-python src/base_detect_demo_node.py
-```
-
-查看发布结果：
-
-```bash
-ros2 topic echo /robot_fetch/target_position
-```
+环境激活后，在 `RobotFetch/` 下运行当前 runner-based workflow。当前主入口是 `src/runners/pid_alignment_ros_node.py --config ...`，不是旧的单节点实验脚本。
 
 ## PID 跟踪最近端头（status 模式）
 
@@ -159,7 +144,7 @@ error_px = status_align.target_x - selected_status_target.cx
 当前部分验证的关键配置项在 workflow YAML 中：
 
 - `status_align.target_x`：状态模式下对齐目标像素 x
-- `status_align.max_speed`：状态对齐 PID 的速度输出上限；默认配置为 `0.25`
+- `status_align.max_speed`：状态对齐 PID 的速度输出上限，具体值以当前 workflow YAML 为准
 - `phase_sequence`：本次要执行的阶段序列；单阶段测试可写 `[STATUS_ALIGN]`
 - `detector.status_profile`：status 检测 profile
 - `topics.publish_cmd_vel`：是否发布 workflow `cmd_topic`（通常是 `/cmd_vel`）；可设为 `false` 做只看状态/检测、不向底盘发速度的测试
@@ -185,18 +170,11 @@ python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alig
 The test scope is controlled in YAML with `phase_sequence`. Current partial-test configs use `phase_sequence: [STATUS_ALIGN]`.
 Forward motion is deferred to the full mission runner and is not part of this MVP runner.
 
-
-```bash
-python src/base_detect_demo_node.py \
-  --camera-config BaseDetect/configs/camera.yaml \
-  --bbox-cx 320 --bbox-cy 240 --bbox-width 120 --bbox-height 90 \
-  --frame-id camera_link --hz 2.0
-```
-
 ## 测试
 
-根仓库测试只收集 `tests/` 目录，避免误把 `BaseDetect/scripts/` 下依赖重型推理栈的脚本当成 RobotFetch 单测。
+根仓库测试只收集 `tests/` 目录，避免误把 `BaseDetect/scripts/` 下依赖重型推理栈的脚本当成 RobotFetch 单测。运行测试前先激活项目环境：
 
 ```bash
+source ./scripts/activate_dev_env.sh
 python -m pytest -q
 ```
