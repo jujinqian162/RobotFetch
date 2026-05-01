@@ -42,18 +42,20 @@ class BaseCoordPhaseRunner:
             if base_coord_pub is not None:
                 base_coord_pub.publish(target)
 
+        complete_on_target = (
+            bool(targets)
+            and detection.ready
+            and context.cfg.base_coord.complete_on_first_target
+        )
         algo_status = (
             AlgoStatus.STEP_DONE
-            if targets and context.cfg.base_coord.complete_on_first_target
+            if complete_on_target
             else AlgoStatus.RUNNING
             if targets
             else AlgoStatus.TARGET_LOST
         )
         env_status = EnvStatus.RUNNING if detection.ready else EnvStatus.READY
-        done = (
-            algo_status == AlgoStatus.STEP_DONE
-            and context.cfg.base_coord.complete_on_first_target
-        )
+        done = algo_status == AlgoStatus.STEP_DONE
         _publish_cycle_state(
             context=context,
             phase=self.phase,
@@ -126,6 +128,8 @@ def _log_base_coord_cycle(
                 f"  phase={Phase.BASE_COORD.value}",
                 f"  detector_ready={bool(detection.ready)}",
                 f"  target_count={len(targets)}",
+                f"  targets={_format_base_coord_targets(targets)}",
+                f"  selected={_format_selected_base_coord_target(targets)}",
                 f"  publish_topic={context.cfg.base_coord.publish_topic}",
                 f"  frame_id={context.cfg.base_coord.frame_id}",
                 f"  algo_status={algo_status.value}",
@@ -133,3 +137,32 @@ def _log_base_coord_cycle(
             ]
         )
     )
+
+
+def _format_base_coord_targets(targets: list[dict[str, object]]) -> str:
+    return "[" + ", ".join(
+        _format_base_coord_target(index=index, target=target)
+        for index, target in enumerate(targets, start=1)
+    ) + "]"
+
+
+def _format_base_coord_target(*, index: int, target: dict[str, object]) -> str:
+    return (
+        f"#{index}("
+        f"x={_format_coord_value(target.get('x'))},"
+        f"y={_format_coord_value(target.get('y'))},"
+        f"z={_format_coord_value(target.get('z'))}"
+        ")"
+    )
+
+
+def _format_selected_base_coord_target(targets: list[dict[str, object]]) -> str:
+    if not targets:
+        return "None"
+    return "#1"
+
+
+def _format_coord_value(value: object) -> str:
+    if value is None:
+        return "None"
+    return f"{float(value):.3f}"

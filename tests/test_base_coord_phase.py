@@ -144,6 +144,38 @@ def test_base_coord_switches_profile_reads_frame_and_publishes_targets():
     assert context.publishers.base_coord_pub.messages == result.base_coord_targets
 
 
+def test_base_coord_log_includes_target_coordinates_and_selected_target():
+    first = FakeBaseCoordTarget(
+        label="base",
+        cx=315.0,
+        x=0.12,
+        y=0.34,
+        z=0.56,
+        id=7,
+    )
+    second = FakeBaseCoordTarget(
+        label="base",
+        cx=410.0,
+        x=1.23,
+        y=2.34,
+        z=3.45,
+        id=8,
+    )
+    vision = FakeVisionSession(
+        frame=object(),
+        detection=FakeDetectionBatch(ready=True, targets=[first, second]),
+    )
+    context = make_context(vision=vision)
+    phase = BaseCoordPhaseRunner()
+
+    phase.on_enter(context)
+    phase.tick(context)
+
+    log_message = context.logger.info_messages[-1]
+    assert "  targets=[#1(x=0.120,y=0.340,z=0.560), #2(x=1.230,y=2.340,z=3.450)]" in log_message
+    assert "  selected=#1" in log_message
+
+
 def test_base_coord_keeps_running_without_targets():
     vision = FakeVisionSession(
         frame=object(),
@@ -158,3 +190,31 @@ def test_base_coord_keeps_running_without_targets():
     assert result.algo_status == AlgoStatus.TARGET_LOST
     assert result.done is False
     assert context.publishers.base_coord_pub.messages == []
+    assert "  targets=[]" in context.logger.info_messages[-1]
+    assert "  selected=None" in context.logger.info_messages[-1]
+
+
+def test_base_coord_waits_for_detector_ready_before_complete_on_first_target():
+    target = FakeBaseCoordTarget(
+        label="base",
+        cx=315.0,
+        x=0.12,
+        y=0.34,
+        z=0.56,
+        conf=0.91,
+        id=7,
+    )
+    vision = FakeVisionSession(
+        frame=object(),
+        detection=FakeDetectionBatch(ready=False, targets=[target]),
+    )
+    context = make_context(vision=vision, complete_on_first_target=True)
+    phase = BaseCoordPhaseRunner()
+
+    phase.on_enter(context)
+    result = phase.tick(context)
+
+    assert result.algo_status == AlgoStatus.RUNNING
+    assert result.env_status == EnvStatus.READY
+    assert result.done is False
+    assert context.publishers.base_coord_pub.messages == result.base_coord_targets
