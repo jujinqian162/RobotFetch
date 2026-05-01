@@ -11,6 +11,7 @@ from config.models import (
     AdapterConfig,
     BaseCoordConfig,
     CameraFallbackConfig,
+    CmdVelTransformConfig,
     DetectorConfig,
     ForwardApproachConfig,
     PidAlignmentWorkflowConfig,
@@ -26,6 +27,7 @@ def make_cfg(
     phase_sequence: tuple[str, ...] = (Phase.STATUS_ALIGN.value,),
     max_speed: float = 0.25,
     publish_cmd_vel: bool = True,
+    cmd_vel_transform: CmdVelTransformConfig | None = None,
     camera_fallbacks: tuple[CameraFallbackConfig, ...] = (
         CameraFallbackConfig("v4l2", "MJPG", 640, 360, 270.0),
         CameraFallbackConfig("v4l2", "MJPG", 800, 600, 190.0),
@@ -61,7 +63,8 @@ def make_cfg(
             complete_on_first_target=True,
         ),
         adapter=AdapterConfig(
-            turtle_cmd_topic="/turtle1/cmd_vel" if environment == "turtle" else None
+            turtle_cmd_topic="/turtle1/cmd_vel" if environment == "turtle" else None,
+            cmd_vel_transform=cmd_vel_transform or CmdVelTransformConfig(),
         ),
     )
 
@@ -384,6 +387,7 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
             "  algo_status_topic=/workflow/algo_status\n"
             "  env_status_topic=/workflow/env_status\n"
             "  turtle_cmd_topic=None\n"
+            "  cmd_vel_transform=invert_linear_x=False invert_linear_y=False invert_angular_z=False\n"
             "  target_x=320.000\n"
             "  tolerance_px=8.000\n"
             "  forward_approach_speed_mps=0.120\n"
@@ -468,6 +472,7 @@ def test_pid_alignment_ros_node_builds_engine_without_opening_capture_or_detecto
             "  algo_status_topic=/workflow/algo_status\n"
             "  env_status_topic=/workflow/env_status\n"
             "  turtle_cmd_topic=None\n"
+            "  cmd_vel_transform=invert_linear_x=False invert_linear_y=False invert_angular_z=False\n"
             "  target_x=320.000\n"
             "  tolerance_px=8.000\n"
             "  forward_approach_speed_mps=0.120\n"
@@ -549,6 +554,70 @@ def test_pid_alignment_ros_node_bridges_runner_cmd_to_turtle_topic(monkeypatch):
     assert turtle_messages[0].angular.z == 0.25
 
 
+def test_pid_alignment_ros_node_applies_cmd_vel_transform_before_turtle_bridge(
+    monkeypatch,
+):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+    publishers: dict[str, object] = {}
+
+    class FakeRosPublisher:
+        def __init__(self, topic: str) -> None:
+            self.topic = topic
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    def fake_create_publisher(self, msg_type, topic, qos_depth):
+        publisher = FakeRosPublisher(topic)
+        publishers[topic] = publisher
+        return publisher
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        fake_create_publisher,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_timer",
+        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        raising=False,
+    )
+
+    cfg = make_cfg(
+        environment="turtle",
+        cmd_vel_transform=CmdVelTransformConfig(
+            invert_linear_x=True,
+            invert_linear_y=True,
+            invert_angular_z=True,
+        ),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(cfg=cfg)
+    node.cmd_pub.publish(
+        {
+            "linear_x": 0.1,
+            "linear_y": 0.18,
+            "angular_z": 0.25,
+        }
+    )
+
+    raw_messages = publishers["/cmd_vel"].messages
+    turtle_messages = publishers["/turtle1/cmd_vel"].messages
+
+    assert len(raw_messages) == 1
+    assert raw_messages[0].linear.x == -0.1
+    assert raw_messages[0].linear.y == -0.18
+    assert raw_messages[0].angular.z == -0.25
+
+    assert len(turtle_messages) == 1
+    assert turtle_messages[0].linear.x == -0.18
+    assert turtle_messages[0].linear.y == 0.0
+    assert turtle_messages[0].angular.z == -0.25
+
+
 def test_pid_alignment_ros_node_can_disable_workflow_cmd_vel_publish(monkeypatch):
     fake_ros_node = import_with_fake_ros(monkeypatch)
     publishers: dict[str, object] = {}
@@ -612,6 +681,63 @@ def test_pid_alignment_ros_node_can_disable_workflow_cmd_vel_publish(monkeypatch
 
     assert "/cmd_vel" not in publishers
     assert len(publishers["/turtle1/cmd_vel"].messages) == 1
+
+
+def test_pid_alignment_ros_node_applies_cmd_vel_transform_when_workflow_publish_disabled(
+    monkeypatch,
+):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+    publishers: dict[str, object] = {}
+
+    class FakeRosPublisher:
+        def __init__(self, topic: str) -> None:
+            self.topic = topic
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    def fake_create_publisher(self, msg_type, topic, qos_depth):
+        publisher = FakeRosPublisher(topic)
+        publishers[topic] = publisher
+        return publisher
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        fake_create_publisher,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_timer",
+        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        raising=False,
+    )
+
+    cfg = make_cfg(
+        environment="turtle",
+        publish_cmd_vel=False,
+        cmd_vel_transform=CmdVelTransformConfig(
+            invert_linear_x=False,
+            invert_linear_y=True,
+            invert_angular_z=True,
+        ),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(cfg=cfg)
+    node.cmd_pub.publish(
+        {
+            "linear_x": 0.0,
+            "linear_y": 0.18,
+            "angular_z": 0.25,
+        }
+    )
+
+    assert "/cmd_vel" not in publishers
+    assert len(publishers["/turtle1/cmd_vel"].messages) == 1
+    assert publishers["/turtle1/cmd_vel"].messages[0].linear.x == -0.18
+    assert publishers["/turtle1/cmd_vel"].messages[0].angular.z == -0.25
 
 
 def test_parse_args_defaults_config_path_from_worktree_root():

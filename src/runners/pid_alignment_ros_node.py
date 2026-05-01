@@ -20,6 +20,7 @@ DEFAULT_CONFIG_PATH = WORKTREE_ROOT / "configs/workflows/pid_alignment.robot.yam
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from adapters.cmd_vel_transform import CmdVelTransformAdapter
 from adapters.robot_adapter import RobotAdapter
 from adapters.turtle_adapter import TurtleAdapter
 from config.loaders import load_pid_alignment_config
@@ -73,10 +74,12 @@ class _WorkflowCommandPublisher:
         ros_publisher: Any | None,
         message_type: type[Twist],
         adapter_cmd_handler: Callable[[Any], Any] | None = None,
+        cmd_vel_transform: CmdVelTransformAdapter | None = None,
     ) -> None:
         self._ros_publisher = ros_publisher
         self._message_type = message_type
         self._adapter_cmd_handler = adapter_cmd_handler
+        self._cmd_vel_transform = cmd_vel_transform or CmdVelTransformAdapter()
         self._workflow_publisher = (
             None
             if ros_publisher is None
@@ -87,6 +90,7 @@ class _WorkflowCommandPublisher:
         )
 
     def publish(self, payload: dict[str, float]) -> None:
+        payload = self._cmd_vel_transform.apply(payload)
         if self._workflow_publisher is not None:
             self._workflow_publisher.publish(payload)
         if self._adapter_cmd_handler is None:
@@ -283,12 +287,16 @@ class PidAlignmentRosNode(Node):
             env_status_publisher=lambda _: None,
             turtle_cmd_publisher=turtle_cmd_publisher,
         )
+        cmd_vel_transform = CmdVelTransformAdapter.from_config(
+            cfg.adapter.cmd_vel_transform
+        )
         self._cmd_pub = _WorkflowCommandPublisher(
             ros_publisher=workflow_cmd_ros_publisher,
             message_type=Twist,
             adapter_cmd_handler=(
                 self._adapter.on_cmd_vel if cfg.environment == "turtle" else None
             ),
+            cmd_vel_transform=cmd_vel_transform,
         )
         self._resources = WorkflowResources(cfg=cfg, logger=self.get_logger())
         self._workflow_context = WorkflowContext(
@@ -386,11 +394,23 @@ def _build_startup_log_message(cfg: PidAlignmentWorkflowConfig) -> str:
             ("algo_status_topic", cfg.topics.algo_status_topic),
             ("env_status_topic", cfg.topics.env_status_topic),
             ("turtle_cmd_topic", cfg.adapter.turtle_cmd_topic),
+            (
+                "cmd_vel_transform",
+                _format_cmd_vel_transform(cfg.adapter.cmd_vel_transform),
+            ),
             ("target_x", f"{cfg.target_x:.3f}"),
             ("tolerance_px", f"{cfg.tolerance_px:.3f}"),
             ("forward_approach_speed_mps", f"{cfg.forward_approach.speed_mps:.3f}"),
             ("forward_approach_distance_m", f"{cfg.forward_approach.distance_m:.3f}"),
         ),
+    )
+
+
+def _format_cmd_vel_transform(transform: Any) -> str:
+    return (
+        f"invert_linear_x={bool(getattr(transform, 'invert_linear_x', False))} "
+        f"invert_linear_y={bool(getattr(transform, 'invert_linear_y', False))} "
+        f"invert_angular_z={bool(getattr(transform, 'invert_angular_z', False))}"
     )
 
 

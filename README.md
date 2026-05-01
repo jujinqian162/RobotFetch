@@ -159,6 +159,7 @@ error_px = status_align.target_x - selected_status_target.cx
 - `topics.publish_cmd_vel`：是否发布 workflow `cmd_topic`（通常是 `/cmd_vel`）；可设为 `false` 做只看状态/检测、不向底盘发速度的测试
 - `topics.selected_status_topic`：当前选中目标像素话题
 - `adapter.turtle_cmd_topic`：`environment: turtle` 时，将 runner 的 `/cmd_vel` 输出桥接为 turtlesim 可执行的速度话题
+- `adapter.cmd_vel_transform.*`：最终输出速度前的全局符号变换；`invert_linear_x`、`invert_linear_y`、`invert_angular_z` 可分别反转 x、y 和角速度，turtle 桥接也使用同一套变换
 
 ## Runner-Based Workflow Startup
 

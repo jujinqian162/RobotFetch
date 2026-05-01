@@ -182,6 +182,45 @@ pid_alignment_workflow:
     assert cfg.detector.camera_fallbacks == DEFAULT_CAMERA_FALLBACKS
 
 
+def test_load_pid_alignment_config_reads_cmd_vel_transform(tmp_path: Path):
+    config_path = tmp_path / "pid_alignment.cmd_vel_transform.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+    cmd_vel_transform:
+      invert_linear_x: true
+      invert_linear_y: false
+      invert_angular_z: true
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_pid_alignment_config(config_path)
+    transform = getattr(cfg.adapter, "cmd_vel_transform", None)
+
+    assert transform is not None
+    assert transform.invert_linear_x is True
+    assert transform.invert_linear_y is False
+    assert transform.invert_angular_z is True
+
+
 def test_load_pid_alignment_config_reads_base_coord_fields(tmp_path: Path):
     config_path = tmp_path / "pid_alignment.base_coord.yaml"
     config_path.write_text(

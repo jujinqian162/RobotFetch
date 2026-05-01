@@ -10,6 +10,7 @@ from .models import (
     AdapterConfig,
     BaseCoordConfig,
     CameraFallbackConfig,
+    CmdVelTransformConfig,
     DetectorConfig,
     ForwardApproachConfig,
     PidAlignmentWorkflowConfig,
@@ -30,6 +31,11 @@ def load_pid_alignment_config(
     topics = _require_mapping_field(root, "topics", parent="pid_alignment_workflow")
     detector = _require_mapping_field(root, "detector", parent="pid_alignment_workflow")
     adapter = _require_mapping_field(root, "adapter", parent="pid_alignment_workflow")
+    cmd_vel_transform = _optional_mapping_field(
+        adapter,
+        "cmd_vel_transform",
+        parent="pid_alignment_workflow.adapter",
+    )
     status_align = _require_mapping_field(
         root, "status_align", parent="pid_alignment_workflow"
     )
@@ -169,6 +175,26 @@ def load_pid_alignment_config(
                 "turtle_cmd_topic",
                 default=None,
                 parent="pid_alignment_workflow.adapter",
+            ),
+            cmd_vel_transform=CmdVelTransformConfig(
+                invert_linear_x=_require_defaulted_bool_field(
+                    cmd_vel_transform,
+                    "invert_linear_x",
+                    default=False,
+                    parent="pid_alignment_workflow.adapter.cmd_vel_transform",
+                ),
+                invert_linear_y=_require_defaulted_bool_field(
+                    cmd_vel_transform,
+                    "invert_linear_y",
+                    default=False,
+                    parent="pid_alignment_workflow.adapter.cmd_vel_transform",
+                ),
+                invert_angular_z=_require_defaulted_bool_field(
+                    cmd_vel_transform,
+                    "invert_angular_z",
+                    default=False,
+                    parent="pid_alignment_workflow.adapter.cmd_vel_transform",
+                ),
             ),
         ),
     )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -46,8 +46,18 @@ class DetectorConfig:
 
 
 @dataclass(frozen=True)
+class CmdVelTransformConfig:
+    invert_linear_x: bool = False
+    invert_linear_y: bool = False
+    invert_angular_z: bool = False
+
+
+@dataclass(frozen=True)
 class AdapterConfig:
     turtle_cmd_topic: str | None
+    cmd_vel_transform: CmdVelTransformConfig = field(
+        default_factory=CmdVelTransformConfig
+    )
 
 
 @dataclass(frozen=True)

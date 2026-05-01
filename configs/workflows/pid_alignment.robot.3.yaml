@@ -65,6 +65,12 @@ pid_alignment_workflow:
     # turtlesim command topic. Used only when environment is turtle.
     # Keep null for robot configs.
     turtle_cmd_topic: null
+    # Final cmd_vel sign adapter.
+    # Applies globally to workflow /cmd_vel and the turtle bridge output path.
+    cmd_vel_transform:
+      invert_linear_x: false
+      invert_linear_y: false
+      invert_angular_z: false
 
   status_align:
     # Desired image x-coordinate for alignment, in pixels.
