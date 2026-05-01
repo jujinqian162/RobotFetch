@@ -1,7 +1,6 @@
 import importlib.util
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,10 +17,9 @@ def load_module():
     return module
 
 
-class FakeTwist:
+class FakeFloat32MultiArray:
     def __init__(self):
-        self.linear = SimpleNamespace(x=None, y=None, z=None)
-        self.angular = SimpleNamespace(x=None, y=None, z=None)
+        self.data = []
 
 
 def test_parse_key_value_args_supports_robot_axis_probe_command():
@@ -33,11 +31,18 @@ def test_parse_key_value_args_supports_robot_axis_probe_command():
 
     assert command.x_vel == 0.1
     assert command.y_vel == -0.2
-    assert command.z_vel == 0.0
     assert command.angular_z == 0.0
     assert command.duration_sec == 0.15
     assert command.topic == "/test_cmd"
     assert command.rate_hz == 25.0
+
+
+def test_parse_key_value_args_defaults_to_robotfetch_electric_topic():
+    module = load_module()
+
+    command = module.parse_key_value_args(["x_vel=0.1"])
+
+    assert command.topic == "/t0x0101_robotfetch"
 
 
 def test_parse_key_value_args_rejects_unknown_keys():
@@ -48,6 +53,18 @@ def test_parse_key_value_args_rejects_unknown_keys():
     except ValueError as exc:
         assert "unknown key" in str(exc)
         assert "seconds" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_parse_key_value_args_rejects_unsupported_linear_z_velocity():
+    module = load_module()
+
+    try:
+        module.parse_key_value_args(["z_vel=0.1"])
+    except ValueError as exc:
+        assert "unknown key" in str(exc)
+        assert "z_vel" in str(exc)
     else:
         raise AssertionError("expected ValueError")
 
@@ -63,14 +80,16 @@ def test_parse_key_value_args_rejects_empty_command():
         raise AssertionError("expected ValueError")
 
 
-def test_build_twist_sets_requested_velocity_and_can_build_stop_message():
+def test_build_float32_multi_array_sets_requested_velocity_and_stop_message():
     module = load_module()
-    command = module.MoveCommand(x_vel=0.1, y_vel=-0.2, z_vel=0.3, angular_z=-0.4)
+    command = module.MoveCommand(x_vel=0.1, y_vel=-0.2, angular_z=-0.4)
 
-    twist = module.build_twist(FakeTwist, command)
-    stop = module.build_twist(FakeTwist, command, stop=True)
+    message = module.build_float32_multi_array(FakeFloat32MultiArray, command)
+    stop = module.build_float32_multi_array(
+        FakeFloat32MultiArray,
+        command,
+        stop=True,
+    )
 
-    assert (twist.linear.x, twist.linear.y, twist.linear.z) == (0.1, -0.2, 0.3)
-    assert (twist.angular.x, twist.angular.y, twist.angular.z) == (0.0, 0.0, -0.4)
-    assert (stop.linear.x, stop.linear.y, stop.linear.z) == (0.0, 0.0, 0.0)
-    assert (stop.angular.x, stop.angular.y, stop.angular.z) == (0.0, 0.0, 0.0)
+    assert message.data == [0.1, -0.2, -0.4]
+    assert stop.data == [0.0, 0.0, 0.0]

@@ -1,7 +1,7 @@
 pid_alignment_workflow:
   # Runtime target:
   # - turtle: publish normal workflow topics and bridge /cmd_vel to turtlesim.
-  # - robot: publish normal workflow topics only; the real base should consume cmd_topic.
+  # - robot: publish normal workflow topics and send Float32MultiArray commands to cmd_topic.
   environment: turtle
 
   # First phase to enter when this unified workflow node starts.
@@ -65,8 +65,8 @@ pid_alignment_workflow:
     # turtlesim command topic. Used only when environment is turtle.
     # Set to null for robot configs.
     turtle_cmd_topic: /turtle1/cmd_vel
-    # Final cmd_vel sign adapter.
-    # Applies globally to workflow /cmd_vel and the turtle bridge output path.
+    # Final command sign adapter.
+    # Applies globally before publishing robot commands or turtle bridge output.
     cmd_vel_transform:
       invert_linear_x: false
       invert_linear_y: false

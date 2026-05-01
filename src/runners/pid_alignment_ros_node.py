@@ -12,7 +12,7 @@ from geometry_msgs.msg import PointStamped, Twist
 from rclpy._rclpy_pybind11 import RCLError
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
-from std_msgs.msg import String
+from std_msgs.msg import Float32MultiArray, String
 
 WORKTREE_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = WORKTREE_ROOT / "src"
@@ -67,12 +67,36 @@ class _TwistPublisher:
         self._ros_publisher.publish(message)
 
 
+class _Float32MultiArrayPublisher:
+    def __init__(
+        self,
+        *,
+        ros_publisher: Any,
+        message_type: type[Float32MultiArray],
+    ) -> None:
+        self._ros_publisher = ros_publisher
+        self._message_type = message_type
+
+    def publish(self, payload: dict[str, float]) -> None:
+        message = self._message_type()
+        message.data = [
+            float(payload.get("linear_x", 0.0)),
+            float(payload.get("linear_y", 0.0)),
+            float(payload.get("angular_z", 0.0)),
+        ]
+        self._ros_publisher.publish(message)
+
+
+CommandPublisherType = type[_TwistPublisher] | type[_Float32MultiArrayPublisher]
+
+
 class _WorkflowCommandPublisher:
     def __init__(
         self,
         *,
         ros_publisher: Any | None,
-        message_type: type[Twist],
+        message_type: type[Any],
+        workflow_publisher_type: CommandPublisherType,
         adapter_cmd_handler: Callable[[Any], Any] | None = None,
         cmd_vel_transform: CmdVelTransformAdapter | None = None,
     ) -> None:
@@ -83,7 +107,7 @@ class _WorkflowCommandPublisher:
         self._workflow_publisher = (
             None
             if ros_publisher is None
-            else _TwistPublisher(
+            else workflow_publisher_type(
                 ros_publisher=ros_publisher,
                 message_type=message_type,
             )
@@ -244,15 +268,27 @@ class PidAlignmentRosNode(Node):
         super().__init__("pid_alignment_runner")
         self._cfg = cfg
 
+        workflow_cmd_message_type: type[Any] = (
+            Twist if cfg.environment == "turtle" else Float32MultiArray
+        )
+        workflow_publisher_type: CommandPublisherType = (
+            _TwistPublisher
+            if cfg.environment == "turtle"
+            else _Float32MultiArrayPublisher
+        )
         workflow_cmd_ros_publisher = (
-            self.create_publisher(Twist, cfg.topics.cmd_topic, 10)
+            self.create_publisher(workflow_cmd_message_type, cfg.topics.cmd_topic, 10)
             if cfg.topics.publish_cmd_vel
             else None
         )
         turtle_cmd_publisher: Callable[[dict[str, float]], None] | None = None
         if cfg.environment == "turtle" and cfg.adapter.turtle_cmd_topic:
             turtle_cmd_publisher = _TwistPublisher(
-                ros_publisher=self.create_publisher(Twist, cfg.adapter.turtle_cmd_topic, 10),
+                ros_publisher=self.create_publisher(
+                    Twist,
+                    cfg.adapter.turtle_cmd_topic,
+                    10,
+                ),
                 message_type=Twist,
             ).publish
         self._phase_pub = _StringPublisher(
@@ -292,7 +328,8 @@ class PidAlignmentRosNode(Node):
         )
         self._cmd_pub = _WorkflowCommandPublisher(
             ros_publisher=workflow_cmd_ros_publisher,
-            message_type=Twist,
+            message_type=workflow_cmd_message_type,
+            workflow_publisher_type=workflow_publisher_type,
             adapter_cmd_handler=(
                 self._adapter.on_cmd_vel if cfg.environment == "turtle" else None
             ),

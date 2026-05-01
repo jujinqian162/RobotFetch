@@ -25,6 +25,7 @@ def make_cfg(
     environment: str = "turtle",
     start_phase: str = Phase.STATUS_ALIGN.value,
     phase_sequence: tuple[str, ...] = (Phase.STATUS_ALIGN.value,),
+    cmd_topic: str | None = None,
     max_speed: float = 0.25,
     publish_cmd_vel: bool = True,
     cmd_vel_transform: CmdVelTransformConfig | None = None,
@@ -34,6 +35,9 @@ def make_cfg(
         CameraFallbackConfig("v4l2", "MJPG", 1024, 768, 190.0),
     ),
 ) -> PidAlignmentWorkflowConfig:
+    resolved_cmd_topic = cmd_topic or (
+        "/cmd_vel" if environment == "turtle" else "/t0x0101_robotfetch"
+    )
     return PidAlignmentWorkflowConfig(
         environment=environment,
         start_phase=start_phase,
@@ -43,7 +47,7 @@ def make_cfg(
         max_speed=max_speed,
         forward_approach=ForwardApproachConfig(speed_mps=0.12, distance_m=0.3),
         topics=TopicConfig(
-            cmd_topic="/cmd_vel",
+            cmd_topic=resolved_cmd_topic,
             publish_cmd_vel=publish_cmd_vel,
             workflow_phase_topic="/workflow/phase",
             algo_status_topic="/workflow/algo_status",
@@ -99,6 +103,10 @@ def import_with_fake_ros(monkeypatch):
             self.linear = SimpleNamespace(x=0.0, y=0.0, z=0.0)
             self.angular = SimpleNamespace(x=0.0, y=0.0, z=0.0)
 
+    class FakeFloat32MultiArray:
+        def __init__(self) -> None:
+            self.data: list[float] = []
+
     class FakePointStamped:
         def __init__(self) -> None:
             self.header = SimpleNamespace(stamp=None, frame_id="")
@@ -120,6 +128,7 @@ def import_with_fake_ros(monkeypatch):
 
     fake_std = types.ModuleType("std_msgs")
     fake_std_msg = types.ModuleType("std_msgs.msg")
+    fake_std_msg.Float32MultiArray = FakeFloat32MultiArray
     fake_std_msg.String = FakeString
 
     monkeypatch.setitem(sys.modules, "rclpy", fake_rclpy)
@@ -380,7 +389,7 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
             "  input_source=0\n"
             "  status_profile=status_competition\n"
             "  base_coord_profile=base_coord_competition\n"
-            "  cmd_topic=/cmd_vel\n"
+            "  cmd_topic=/t0x0101_robotfetch\n"
             "  selected_status_topic=/robot_fetch/selected_target_px\n"
             "  base_coord_topic=/robot_fetch/base_coord_targets\n"
             "  workflow_phase_topic=/workflow/phase\n"
@@ -465,7 +474,7 @@ def test_pid_alignment_ros_node_builds_engine_without_opening_capture_or_detecto
             "  input_source=0\n"
             "  status_profile=status_competition\n"
             "  base_coord_profile=base_coord_competition\n"
-            "  cmd_topic=/cmd_vel\n"
+            "  cmd_topic=/t0x0101_robotfetch\n"
             "  selected_status_topic=/robot_fetch/selected_target_px\n"
             "  base_coord_topic=/robot_fetch/base_coord_targets\n"
             "  workflow_phase_topic=/workflow/phase\n"
@@ -479,6 +488,57 @@ def test_pid_alignment_ros_node_builds_engine_without_opening_capture_or_detecto
             "  forward_approach_distance_m=0.300"
         ),
     ]
+
+
+def test_pid_alignment_ros_node_publishes_robot_cmd_as_float32_multi_array(monkeypatch):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+    publishers: dict[str, object] = {}
+
+    class FakeRosPublisher:
+        def __init__(self, *, topic: str, msg_type: type[object]) -> None:
+            self.topic = topic
+            self.msg_type = msg_type
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    def fake_create_publisher(self, msg_type, topic, qos_depth):
+        publisher = FakeRosPublisher(topic=topic, msg_type=msg_type)
+        publishers[topic] = publisher
+        return publisher
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        fake_create_publisher,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_timer",
+        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node,
+        "build_adapter",
+        lambda **kwargs: SimpleNamespace(on_cmd_vel=lambda message: None, on_phase=lambda phase: None),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(cfg=make_cfg(environment="robot"))
+    node.cmd_pub.publish(
+        {
+            "linear_x": 0.1,
+            "linear_y": -0.2,
+            "angular_z": 0.3,
+        }
+    )
+
+    publisher = publishers["/t0x0101_robotfetch"]
+    assert publisher.msg_type.__name__ == "FakeFloat32MultiArray"
+    assert len(publisher.messages) == 1
+    assert publisher.messages[0].data == [0.1, -0.2, 0.3]
 
 
 def test_pid_alignment_ros_node_bridges_runner_cmd_to_turtle_topic(monkeypatch):

@@ -68,7 +68,7 @@ The active workflow path is runner-based:
 3. `src/algorithms/detector_gateway.py` integrates BaseDetect by adding `BaseDetect/` to `sys.path` and importing `Detector` from the BaseDetect SDK.
 4. `src/algorithms/status_align.py`, `target_selection.py`, and `pid.py` choose the nearest valid status target and compute bounded lateral control while reporting `RUNNING`, `ALIGNED`, or `TARGET_LOST`.
 5. `src/workflow/types.py` and `phase_controller.py` define the shared workflow contract (`Phase`, `AlgoStatus`, `EnvStatus`) used by runners, adapters, and tests.
-6. `src/adapters/robot_adapter.py` passes workflow velocity through for the robot environment; `src/adapters/turtle_adapter.py` maps workflow lateral `linear.y` to turtlesim forward `linear.x` for partial validation.
+6. Robot workflow commands are published to the configured electric-control topic as `Float32MultiArray`; `src/adapters/turtle_adapter.py` maps workflow lateral `linear.y` to turtlesim forward `linear.x` for partial validation.
 
 The current MVP runner implements `STATUS_ALIGN` only. `FORWARD_APPROACH` and `BASE_COORD` exist in the workflow contract for future full-mission support, but are not executed by the current partial-test configs.
 
@@ -85,7 +85,7 @@ The current MVP runner implements `STATUS_ALIGN` only. `FORWARD_APPROACH` and `B
   - `detector.sdk_config`: usually `BaseDetect/configs/basedetect_sdk.yaml`
   - `detector.status_profile`: usually `status_competition`
   - `detector.input_source`: camera index such as `"0"` or a replay video path
-  - `topics.cmd_topic`: workflow velocity topic, usually `/cmd_vel`
+  - `topics.cmd_topic`: workflow command topic; robot configs use `/t0x0101_robotfetch` with `std_msgs/Float32MultiArray` data `[linear_x, linear_y, angular_z]`, while turtle configs keep `/cmd_vel` as `geometry_msgs/Twist`
   - `topics.selected_status_topic`: selected target pixel topic
   - `adapter.turtle_cmd_topic`: turtlesim command topic for turtle mode
   - `status_align.target_x` and `status_align.tolerance_px`: pixel alignment target and tolerance

@@ -52,7 +52,8 @@ def test_load_pid_alignment_config_reads_robot_workflow_file():
     assert cfg.max_speed > 0.0
     assert cfg.forward_approach.speed_mps == 0.08
     assert cfg.forward_approach.distance_m == 0.2
-    assert isinstance(cfg.topics.publish_cmd_vel, bool)
+    assert cfg.topics.cmd_topic == "/t0x0101_robotfetch"
+    assert cfg.topics.publish_cmd_vel is True
     assert cfg.topics.algo_status_topic == "/workflow/algo_status"
     assert cfg.topics.env_status_topic == "/workflow/env_status"
     assert cfg.topics.selected_status_topic == "/robot_fetch/selected_target_px"

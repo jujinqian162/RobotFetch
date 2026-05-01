@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish a short ROS Twist command for checking robot axis directions."""
+"""Publish a short electric-control command for checking robot axis directions."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 
-DEFAULT_TOPIC = "/cmd_vel"
+DEFAULT_TOPIC = "/t0x0101_robotfetch"
 DEFAULT_DURATION_SEC = 0.1
 DEFAULT_RATE_HZ = 20.0
 DEFAULT_STARTUP_DELAY_SEC = 0.2
@@ -21,7 +21,6 @@ DEFAULT_STOP_COUNT = 3
 class MoveCommand:
     x_vel: float = 0.0
     y_vel: float = 0.0
-    z_vel: float = 0.0
     angular_z: float = 0.0
     duration_sec: float = DEFAULT_DURATION_SEC
     topic: str = DEFAULT_TOPIC
@@ -36,7 +35,6 @@ KEY_ALIASES = {
     "duration_sec": "duration_sec",
     "x_vel": "x_vel",
     "y_vel": "y_vel",
-    "z_vel": "z_vel",
     "angular_z": "angular_z",
     "yaw_vel": "angular_z",
     "topic": "topic",
@@ -55,13 +53,13 @@ def usage() -> str:
             "Examples:",
             "  scripts/move.py x_vel=0.1 t=0.1",
             "  scripts/move.py y_vel=0.1 t=0.1",
-            "  scripts/move.py x_vel=-0.1 t=0.2 topic=/cmd_vel",
+            "  scripts/move.py x_vel=-0.1 t=0.2 topic=/t0x0101_robotfetch",
             "",
             "Keys:",
-            "  x_vel, y_vel, z_vel       linear velocity in m/s",
+            "  x_vel, y_vel              linear velocity in m/s",
             "  angular_z, yaw_vel        angular z velocity in rad/s",
             "  t, duration               command duration in seconds",
-            "  topic                     Twist topic, default /cmd_vel",
+            "  topic                     Float32MultiArray topic, default /t0x0101_robotfetch",
             "  rate_hz                   publish rate, default 20",
         ]
     )
@@ -74,7 +72,6 @@ def parse_key_value_args(argv: Sequence[str]) -> MoveCommand:
     values: dict[str, object] = {
         "x_vel": 0.0,
         "y_vel": 0.0,
-        "z_vel": 0.0,
         "angular_z": 0.0,
         "duration_sec": DEFAULT_DURATION_SEC,
         "topic": DEFAULT_TOPIC,
@@ -135,31 +132,26 @@ def _validate_command(command: MoveCommand) -> None:
         raise ValueError("'stop_count' must be at least 1")
 
 
-def build_twist(twist_type: type, command: MoveCommand, *, stop: bool = False):
-    twist = twist_type()
+def build_float32_multi_array(
+    message_type: type,
+    command: MoveCommand,
+    *,
+    stop: bool = False,
+):
+    message = message_type()
     if stop:
-        twist.linear.x = 0.0
-        twist.linear.y = 0.0
-        twist.linear.z = 0.0
-        twist.angular.x = 0.0
-        twist.angular.y = 0.0
-        twist.angular.z = 0.0
-        return twist
+        message.data = [0.0, 0.0, 0.0]
+        return message
 
-    twist.linear.x = command.x_vel
-    twist.linear.y = command.y_vel
-    twist.linear.z = command.z_vel
-    twist.angular.x = 0.0
-    twist.angular.y = 0.0
-    twist.angular.z = command.angular_z
-    return twist
+    message.data = [command.x_vel, command.y_vel, command.angular_z]
+    return message
 
 
 def run_ros_move(command: MoveCommand) -> int:
     try:
         import rclpy
-        from geometry_msgs.msg import Twist
         from rclpy.node import Node
+        from std_msgs.msg import Float32MultiArray
     except ImportError as exc:
         print(
             "Failed to import ROS 2 Python packages. "
@@ -171,19 +163,19 @@ def run_ros_move(command: MoveCommand) -> int:
 
     rclpy.init()
     node = Node("robotfetch_move")
-    publisher = node.create_publisher(Twist, command.topic, 10)
+    publisher = node.create_publisher(Float32MultiArray, command.topic, 10)
     try:
         _spin_sleep(rclpy, node, command.startup_delay_sec)
-        _publish_for_duration(rclpy, node, publisher, Twist, command)
-        _publish_stop(rclpy, node, publisher, Twist, command)
+        _publish_for_duration(rclpy, node, publisher, Float32MultiArray, command)
+        _publish_stop(rclpy, node, publisher, Float32MultiArray, command)
         node.get_logger().info(
-            "published Twist to "
-            f"{command.topic}: linear=({command.x_vel}, {command.y_vel}, {command.z_vel}) "
+            "published Float32MultiArray to "
+            f"{command.topic}: data=[{command.x_vel}, {command.y_vel}, {command.angular_z}] "
             f"angular_z={command.angular_z} duration={command.duration_sec}s"
         )
         return 0
     except KeyboardInterrupt:
-        _publish_stop(rclpy, node, publisher, Twist, command)
+        _publish_stop(rclpy, node, publisher, Float32MultiArray, command)
         return 130
     finally:
         node.destroy_node()
@@ -191,22 +183,34 @@ def run_ros_move(command: MoveCommand) -> int:
             rclpy.shutdown()
 
 
-def _publish_for_duration(rclpy_module, node, publisher, twist_type: type, command: MoveCommand) -> None:
+def _publish_for_duration(
+    rclpy_module,
+    node,
+    publisher,
+    message_type: type,
+    command: MoveCommand,
+) -> None:
     period_sec = 1.0 / command.rate_hz
     end_time = time.monotonic() + command.duration_sec
     sent_count = 0
     while sent_count == 0 or time.monotonic() < end_time:
-        publisher.publish(build_twist(twist_type, command))
+        publisher.publish(build_float32_multi_array(message_type, command))
         sent_count += 1
         remaining = end_time - time.monotonic()
         if remaining > 0:
             _spin_sleep(rclpy_module, node, min(period_sec, remaining))
 
 
-def _publish_stop(rclpy_module, node, publisher, twist_type: type, command: MoveCommand) -> None:
+def _publish_stop(
+    rclpy_module,
+    node,
+    publisher,
+    message_type: type,
+    command: MoveCommand,
+) -> None:
     period_sec = 1.0 / command.rate_hz
     for _ in range(command.stop_count):
-        publisher.publish(build_twist(twist_type, command, stop=True))
+        publisher.publish(build_float32_multi_array(message_type, command, stop=True))
         _spin_sleep(rclpy_module, node, period_sec)
 
 

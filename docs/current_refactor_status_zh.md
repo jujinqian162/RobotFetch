@@ -41,9 +41,9 @@ python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alig
 3. `WorkflowEngine` 按 `phase_sequence` 调用当前 phase runner。
 4. `STATUS_ALIGN` 和 `BASE_COORD` 通过共享 `VisionSession` 懒加载并复用 OpenCV capture 和 `DetectorGateway`。
 5. `FORWARD_APPROACH` 不访问视觉资源，只按固定距离/速度输出开环前进命令。
-6. runner 发布 workflow 状态、算法状态、环境状态、选中目标、base 坐标和 `/cmd_vel`。
+6. runner 发布 workflow 状态、算法状态、环境状态、选中目标、base 坐标和命令 topic；robot 使用 `/t0x0101_robotfetch` 的 `Float32MultiArray`，turtle 保留 `/cmd_vel` 的 `Twist`。
 7. turtle 环境会额外通过 `TurtleAdapter` 把 workflow 横向 `linear.y` 映射为 turtlesim 的 `linear.x`，用于部分验证。
-8. robot 环境通过 `RobotAdapter` 直接透传 workflow velocity，供真实机器人接线层消费。
+8. robot 环境将 workflow 命令发布为 `/t0x0101_robotfetch` 的 `Float32MultiArray`，供电控接线层消费。
 
 当前仍然不是完整比赛链路：角度/朝向 PID、真实机器人现场联调和完整任务收尾仍需后续实现或验证。
 
@@ -65,7 +65,7 @@ python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alig
 - `detector.status_profile`: status 检测 profile
 - `detector.base_coord_profile`: base-coordinate 检测 profile
 - `detector.input_source`: 摄像头索引或视频路径
-- `topics.cmd_topic`: workflow velocity topic
+- `topics.cmd_topic`: workflow command topic；robot 配置当前为 `/t0x0101_robotfetch`，消息为 `std_msgs/Float32MultiArray`，`data=[linear_x, linear_y, angular_z]`
 - `topics.selected_status_topic`: 当前选中 status target topic
 - `adapter.turtle_cmd_topic`: turtle 模式下的 turtlesim 命令 topic
 - `status_align.target_x`: 对齐目标像素 x
@@ -112,7 +112,7 @@ python -m pytest -q
 - OpenCV 输入源在现场机器上的稳定性
 - ROS executor / topic 在多节点真实运行时的连通性
 - turtlesim 是否按预期响应桥接后的速度命令
-- 真机 `/cmd_vel` 坐标轴方向和幅值是否正确
+- 真机 `/t0x0101_robotfetch` 坐标轴方向和幅值是否正确
 - PID 参数在真实系统里的稳定性
 - 机器人底盘约束、限速、急停、碰撞风险
 - 角度/朝向 PID phase
@@ -160,7 +160,8 @@ python -m pytest -q
 - `/workflow/phase`
 - `/workflow/algo_status`
 - `/workflow/env_status`
-- `/cmd_vel`
+- robot: `/t0x0101_robotfetch`
+- turtle: `/cmd_vel`
 - selected target topic
 
 如果这些 topic 正常但环境没响应，问题大概率在 adapter 或真机接线层，而不是算法层。

@@ -57,8 +57,9 @@
    - `/workflow/phase`
    - `/workflow/algo_status`
    - `/workflow/env_status`
-   - `/cmd_vel`
-7. `TurtleWorkflowNode` 或真实环境 adapter 消费这些 topic；turtle 环境把算法侧 `linear.y` 映射为 turtlesim 的 `linear.x`，用于验证 PID 和 workflow 同步
+   - robot: `/t0x0101_robotfetch` as `std_msgs/Float32MultiArray`
+   - turtle: `/cmd_vel` as `geometry_msgs/Twist`
+7. turtle 环境把算法侧 `linear.y` 映射为 turtlesim 的 `linear.x`，真实机器人环境由电控订阅 `/t0x0101_robotfetch`，用于验证 PID 和 workflow 同步
 
 所以当前 README 里提到的 runner、turtle bridge、BaseDetect，并不是互相独立的小脚本，而是在服务同一条机器人任务链路。
 
@@ -156,7 +157,8 @@ error_px = status_align.target_x - selected_status_target.cx
 - `detector.base_coord_profile`：base-coordinate 检测 profile
 - `base_coord.publish_topic`：`BASE_COORD` 阶段的 3D 坐标输出话题
 - `base_coord.complete_on_first_target`：当前实现中有至少一个坐标目标时是否立即完成 `BASE_COORD`
-- `topics.publish_cmd_vel`：是否发布 workflow `cmd_topic`（通常是 `/cmd_vel`）；可设为 `false` 做只看状态/检测、不向底盘发速度的测试
+- `topics.cmd_topic`：命令输出 topic；robot 配置使用 `/t0x0101_robotfetch`，消息为 `std_msgs/Float32MultiArray`，`data=[linear_x, linear_y, angular_z]`
+- `topics.publish_cmd_vel`：是否发布 workflow `cmd_topic`；可设为 `false` 做只看状态/检测、不向底盘发速度的测试
 - `topics.selected_status_topic`：当前选中目标像素话题
 - `adapter.turtle_cmd_topic`：`environment: turtle` 时，将 runner 的 `/cmd_vel` 输出桥接为 turtlesim 可执行的速度话题
 - `adapter.cmd_vel_transform.*`：最终输出速度前的全局符号变换；`invert_linear_x`、`invert_linear_y`、`invert_angular_z` 可分别反转 x、y 和角速度，turtle 桥接也使用同一套变换
@@ -169,7 +171,7 @@ Turtle partial test:
 python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alignment.turtle.yaml
 ```
 
-This uses the same runner startup path as the robot config. In turtle mode, the node publishes the workflow `/cmd_vel` message when `topics.publish_cmd_vel: true` and also bridges commands to `adapter.turtle_cmd_topic` so turtlesim can move without a separate bridge process.
+This uses the same runner startup path as the robot config. In turtle mode, the node publishes the workflow `/cmd_vel` `Twist` message when `topics.publish_cmd_vel: true` and also bridges commands to `adapter.turtle_cmd_topic` so turtlesim can move without a separate bridge process.
 
 Real robot partial test:
 
@@ -178,6 +180,7 @@ python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alig
 ```
 
 The configured `phase_sequence` is the mission/action sequence. Use `[STATUS_ALIGN]` for status-only validation, `[FORWARD_APPROACH]` for forward-only validation, and `[STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD]` for a longer robot flow. The same node handles all of these cases.
+In robot mode, velocity commands are published to `/t0x0101_robotfetch` as `std_msgs/Float32MultiArray`, where indices 0, 1, and 2 are `linear_x`, `linear_y`, and `angular_z`.
 
 ## 测试
 
