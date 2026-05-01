@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import runners.pid_alignment_ros_node as ros_node
 from config.models import (
     AdapterConfig,
+    BaseCoordConfig,
     CameraFallbackConfig,
     DetectorConfig,
     ForwardApproachConfig,
@@ -50,8 +51,14 @@ def make_cfg(
         detector=DetectorConfig(
             sdk_config=Path("BaseDetect/configs/basedetect_sdk.yaml"),
             status_profile="status_competition",
+            base_coord_profile="base_coord_competition",
             input_source="0",
             camera_fallbacks=camera_fallbacks,
+        ),
+        base_coord=BaseCoordConfig(
+            publish_topic="/robot_fetch/base_coord_targets",
+            frame_id="camera_link",
+            complete_on_first_target=True,
         ),
         adapter=AdapterConfig(
             turtle_cmd_topic="/turtle1/cmd_vel" if environment == "turtle" else None
@@ -253,55 +260,35 @@ def test_build_capture_log_message_reports_video_properties(monkeypatch):
     )
 
 
-def test_on_timer_stops_when_phase_sequence_requests_stop(monkeypatch):
-    calls: dict[str, object] = {}
+def test_on_timer_calls_workflow_engine_tick_and_stops_on_terminal_result(monkeypatch):
+    calls: list[str] = []
     shutdown_calls: list[object] = []
 
-    def fake_run_status_align_once(**kwargs):
-        calls.update(kwargs)
-        return SimpleNamespace(
-            stop_requested=True,
-            stop_reason="phase_sequence_complete",
-            phase=Phase.STATUS_ALIGN.value,
-            algo_status=AlgoStatus.ALIGNED.value,
-        )
+    class FakeEngine:
+        def tick(self):
+            calls.append("tick")
+            return SimpleNamespace(
+                done=True,
+                stop_reason="phase_sequence_complete",
+                phase=Phase.STATUS_ALIGN,
+                algo_status=AlgoStatus.ALIGNED,
+            )
 
-    monkeypatch.setattr(ros_node, "run_status_align_once", fake_run_status_align_once)
     monkeypatch.setattr(
         ros_node.rclpy,
         "try_shutdown",
         lambda **kwargs: shutdown_calls.append(kwargs),
     )
 
-    class FakeCapture:
-        def read(self):
-            return True, "frame-1"
-
-    class FakeAdapter:
-        def __init__(self) -> None:
-            self.phases: list[str] = []
-
-        def on_phase(self, phase: str) -> None:
-            self.phases.append(phase)
-
     class FakeLogger:
         def __init__(self) -> None:
             self.info_messages: list[str] = []
-            self.warning_messages: list[str] = []
 
         def info(self, message: str) -> None:
             self.info_messages.append(message)
 
-        def warning(self, message: str) -> None:
-            self.warning_messages.append(message)
-
     node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
-    node._cfg = make_cfg()
-    node._runner_cfg = SimpleNamespace(phase_sequence=(Phase.STATUS_ALIGN.value,))
-    node._cap = FakeCapture()
-    node._adapter = FakeAdapter()
-    node._gateway = object()
-    node._status_align = object()
+    node._engine = FakeEngine()
     node._logger = FakeLogger()
     node.get_logger = lambda: node._logger
     node._is_ros_context_ok = lambda: True
@@ -310,12 +297,7 @@ def test_on_timer_stops_when_phase_sequence_requests_stop(monkeypatch):
 
     node._on_timer()
 
-    assert node._adapter.phases == [Phase.STATUS_ALIGN.value]
-    assert calls["frame"] == "frame-1"
-    assert calls["node"] is node
-    assert calls["detector_gateway"] is node._gateway
-    assert calls["status_align_step"] is node._status_align
-    assert calls["cfg"] is node._runner_cfg
+    assert calls == ["tick"]
     assert node.destroyed is True
     assert shutdown_calls == [{}]
     assert node._logger.info_messages == [
@@ -325,201 +307,6 @@ def test_on_timer_stops_when_phase_sequence_requests_stop(monkeypatch):
             "  phase=STATUS_ALIGN\n"
             "  algo_status=ALIGNED\n"
             "  action=stopping_node"
-        )
-    ]
-
-
-def test_on_timer_publishes_zero_command_when_frame_read_fails():
-    class FakeCapture:
-        def read(self):
-            return False, None
-
-    class FakeLogger:
-        def __init__(self) -> None:
-            self.warning_messages: list[str] = []
-
-        def warning(self, message: str) -> None:
-            self.warning_messages.append(message)
-
-    class FakeCmdPublisher:
-        def __init__(self) -> None:
-            self.messages: list[dict[str, float]] = []
-
-        def publish(self, message: dict[str, float]) -> None:
-            self.messages.append(message)
-
-    node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
-    node._cfg = make_cfg()
-    node._cap = FakeCapture()
-    node._cmd_pub = FakeCmdPublisher()
-    node._runner_cfg = SimpleNamespace(cmd_topic="/cmd_vel")
-    node._capture_read_fallback_attempted = True
-    node._logger = FakeLogger()
-    node.get_logger = lambda: node._logger
-    node._is_ros_context_ok = lambda: True
-
-    node._on_timer()
-
-    assert node._cmd_pub.messages == [{"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}]
-    assert node._logger.warning_messages == [
-        "Frame read failed; published zero velocity to /cmd_vel"
-    ]
-
-
-def test_on_timer_retries_numeric_camera_with_v4l2_mjpg_fallback(monkeypatch):
-    calls: dict[str, object] = {}
-    fallback_captures: list[object] = []
-
-    def fake_run_status_align_once(**kwargs):
-        calls.update(kwargs)
-        return SimpleNamespace(
-            stop_requested=False,
-            stop_reason="",
-            phase=Phase.STATUS_ALIGN.value,
-            algo_status=AlgoStatus.RUNNING.value,
-        )
-
-    class InitialCapture:
-        released = False
-
-        def read(self):
-            return False, None
-
-        def release(self) -> None:
-            self.released = True
-
-    class FallbackCapture:
-        set_calls: list[tuple[int, object]]
-
-        def __init__(self, source, backend=None) -> None:
-            self.source = source
-            self.backend = backend
-            self.set_calls = []
-            self.width = None
-            self.released = False
-            fallback_captures.append(self)
-
-        def isOpened(self) -> bool:
-            return True
-
-        def set(self, prop_id: int, value: object) -> None:
-            self.set_calls.append((prop_id, value))
-            if prop_id == fake_cv2.CAP_PROP_FRAME_WIDTH:
-                self.width = value
-
-        def read(self):
-            if self.width == 800:
-                return True, SimpleNamespace(shape=(600, 800, 3))
-            return False, None
-
-        def release(self) -> None:
-            self.released = True
-
-    class FakeAdapter:
-        def __init__(self) -> None:
-            self.phases: list[str] = []
-
-        def on_phase(self, phase: str) -> None:
-            self.phases.append(phase)
-
-    class FakeCmdPublisher:
-        def __init__(self) -> None:
-            self.messages: list[dict[str, float]] = []
-
-        def publish(self, message: dict[str, float]) -> None:
-            self.messages.append(message)
-
-    class FakeLogger:
-        def __init__(self) -> None:
-            self.info_messages: list[str] = []
-            self.warning_messages: list[str] = []
-
-        def info(self, message: str) -> None:
-            self.info_messages.append(message)
-
-        def warning(self, message: str) -> None:
-            self.warning_messages.append(message)
-
-    fake_cv2 = types.SimpleNamespace(
-        CAP_V4L2=200,
-        CAP_PROP_FOURCC=6,
-        CAP_PROP_FRAME_WIDTH=3,
-        CAP_PROP_FRAME_HEIGHT=4,
-        CAP_PROP_FPS=5,
-        VideoCapture=FallbackCapture,
-        VideoWriter_fourcc=lambda *chars: "FOURCC-" + "".join(chars),
-    )
-    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
-    monkeypatch.setattr(ros_node, "run_status_align_once", fake_run_status_align_once)
-
-    initial_capture = InitialCapture()
-    node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
-    node._cfg = make_cfg(
-        camera_fallbacks=(
-            CameraFallbackConfig("v4l2", "MJPG", 1024, 768, 190.0),
-            CameraFallbackConfig("v4l2", "MJPG", 800, 600, 190.0),
-        )
-    )
-    node._runner_cfg = SimpleNamespace(
-        cmd_topic="/cmd_vel",
-        phase_sequence=(Phase.STATUS_ALIGN.value,),
-    )
-    node._cap = initial_capture
-    node._capture_read_fallback_attempted = False
-    node._cmd_pub = FakeCmdPublisher()
-    node._adapter = FakeAdapter()
-    node._gateway = object()
-    node._status_align = object()
-    node._logger = FakeLogger()
-    node.get_logger = lambda: node._logger
-    node._is_ros_context_ok = lambda: True
-
-    node._on_timer()
-
-    assert initial_capture.released is True
-    assert len(fallback_captures) == 2
-    assert fallback_captures[0].source == 0
-    assert fallback_captures[0].backend == fake_cv2.CAP_V4L2
-    assert fallback_captures[0].released is True
-    assert node._cap is fallback_captures[1]
-    assert node._cap.set_calls == [
-        (fake_cv2.CAP_PROP_FOURCC, "FOURCC-MJPG"),
-        (fake_cv2.CAP_PROP_FRAME_WIDTH, 800),
-        (fake_cv2.CAP_PROP_FRAME_HEIGHT, 600),
-        (fake_cv2.CAP_PROP_FPS, 190.0),
-    ]
-    assert calls["frame"].shape == (600, 800, 3)
-    assert node._cmd_pub.messages == []
-    assert node._logger.warning_messages == [
-        (
-            "Frame read failed; trying camera fallback\n"
-            "  source=0\n"
-            "  backend=v4l2\n"
-            "  fourcc=MJPG\n"
-            "  width=1024\n"
-            "  height=768\n"
-            "  fps=190"
-        ),
-        (
-            "Frame read failed; trying camera fallback\n"
-            "  source=0\n"
-            "  backend=v4l2\n"
-            "  fourcc=MJPG\n"
-            "  width=800\n"
-            "  height=600\n"
-            "  fps=190"
-        ),
-    ]
-    assert node._logger.info_messages == [
-        (
-            "Camera fallback selected\n"
-            "  source=0\n"
-            "  backend=v4l2\n"
-            "  fourcc=MJPG\n"
-            "  width=800\n"
-            "  height=600\n"
-            "  fps=190\n"
-            "  shape=(600, 800, 3)"
         )
     ]
 
@@ -559,11 +346,13 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
         fake_ros_node,
         "DetectorGateway",
         lambda **kwargs: SimpleNamespace(**kwargs),
+        raising=False,
     )
     monkeypatch.setattr(
         fake_ros_node,
         "build_status_align_step",
         lambda cfg: SimpleNamespace(cfg=cfg),
+        raising=False,
     )
 
     def fake_build_adapter(*, environment, env_status_publisher, turtle_cmd_publisher=None):
@@ -587,8 +376,10 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
             "  start_phase=STATUS_ALIGN\n"
             "  input_source=0\n"
             "  status_profile=status_competition\n"
+            "  base_coord_profile=base_coord_competition\n"
             "  cmd_topic=/cmd_vel\n"
             "  selected_status_topic=/robot_fetch/selected_target_px\n"
+            "  base_coord_topic=/robot_fetch/base_coord_targets\n"
             "  workflow_phase_topic=/workflow/phase\n"
             "  algo_status_topic=/workflow/algo_status\n"
             "  env_status_topic=/workflow/env_status\n"
@@ -598,20 +389,10 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
             "  forward_approach_speed_mps=0.120\n"
             "  forward_approach_distance_m=0.300"
         ),
-        (
-            "capture opened\n"
-            "  source=0\n"
-            "  source_type=camera\n"
-            "  width=0\n"
-            "  height=0\n"
-            "  fps=0.000\n"
-            "  frame_count=unknown\n"
-            "  fourcc=unknown"
-        ),
     ]
 
 
-def test_pid_alignment_ros_node_skips_detector_and_capture_when_starting_forward(
+def test_pid_alignment_ros_node_builds_engine_without_opening_capture_or_detector(
     monkeypatch,
 ):
     fake_ros_node = import_with_fake_ros(monkeypatch)
@@ -643,45 +424,46 @@ def test_pid_alignment_ros_node_skips_detector_and_capture_when_starting_forward
 
     def fail_build_capture(input_source):
         calls["capture"] += 1
-        raise AssertionError("FORWARD_APPROACH startup must not open capture")
+        raise AssertionError("ROS node startup must not open capture directly")
 
     def fail_gateway(**kwargs):
         calls["gateway"] += 1
-        raise AssertionError("FORWARD_APPROACH startup must not build detector gateway")
+        raise AssertionError("ROS node startup must not build detector gateway directly")
 
     def fail_status_align(cfg):
         calls["status_align"] += 1
-        raise AssertionError("FORWARD_APPROACH startup must not build status align")
+        raise AssertionError("ROS node startup must not build status align directly")
 
-    monkeypatch.setattr(fake_ros_node, "build_capture", fail_build_capture)
-    monkeypatch.setattr(fake_ros_node, "DetectorGateway", fail_gateway)
-    monkeypatch.setattr(fake_ros_node, "build_status_align_step", fail_status_align)
+    monkeypatch.setattr(fake_ros_node, "build_capture", fail_build_capture, raising=False)
+    monkeypatch.setattr(fake_ros_node, "DetectorGateway", fail_gateway, raising=False)
+    monkeypatch.setattr(
+        fake_ros_node,
+        "build_status_align_step",
+        fail_status_align,
+        raising=False,
+    )
     monkeypatch.setattr(
         fake_ros_node,
         "build_adapter",
         lambda **kwargs: SimpleNamespace(on_cmd_vel=lambda message: None, on_phase=lambda phase: None),
     )
 
-    node = fake_ros_node.PidAlignmentRosNode(
-        cfg=make_cfg(
-            environment="robot",
-            start_phase=Phase.FORWARD_APPROACH.value,
-            phase_sequence=(Phase.FORWARD_APPROACH.value,),
-        )
-    )
+    node = fake_ros_node.PidAlignmentRosNode(cfg=make_cfg(environment="robot"))
 
-    assert node._active_phase == Phase.FORWARD_APPROACH
     assert calls == {"capture": 0, "gateway": 0, "status_align": 0}
+    assert hasattr(node, "_engine")
     assert node.logger.info_messages == [
         (
             "starting pid_alignment_runner\n"
             "  environment=robot\n"
-            "  phase_sequence=FORWARD_APPROACH\n"
-            "  start_phase=FORWARD_APPROACH\n"
+            "  phase_sequence=STATUS_ALIGN\n"
+            "  start_phase=STATUS_ALIGN\n"
             "  input_source=0\n"
             "  status_profile=status_competition\n"
+            "  base_coord_profile=base_coord_competition\n"
             "  cmd_topic=/cmd_vel\n"
             "  selected_status_topic=/robot_fetch/selected_target_px\n"
+            "  base_coord_topic=/robot_fetch/base_coord_targets\n"
             "  workflow_phase_topic=/workflow/phase\n"
             "  algo_status_topic=/workflow/algo_status\n"
             "  env_status_topic=/workflow/env_status\n"
@@ -690,11 +472,6 @@ def test_pid_alignment_ros_node_skips_detector_and_capture_when_starting_forward
             "  tolerance_px=8.000\n"
             "  forward_approach_speed_mps=0.120\n"
             "  forward_approach_distance_m=0.300"
-        ),
-        (
-            "capture startup skipped\n"
-            "  reason=start_phase_does_not_require_status_align\n"
-            "  start_phase=FORWARD_APPROACH"
         ),
     ]
 
@@ -740,11 +517,13 @@ def test_pid_alignment_ros_node_bridges_runner_cmd_to_turtle_topic(monkeypatch):
         fake_ros_node,
         "DetectorGateway",
         lambda **kwargs: SimpleNamespace(**kwargs),
+        raising=False,
     )
     monkeypatch.setattr(
         fake_ros_node,
         "build_status_align_step",
         lambda cfg: SimpleNamespace(cfg=cfg),
+        raising=False,
     )
 
     node = fake_ros_node.PidAlignmentRosNode(cfg=make_cfg(environment="turtle"))
@@ -811,11 +590,13 @@ def test_pid_alignment_ros_node_can_disable_workflow_cmd_vel_publish(monkeypatch
         fake_ros_node,
         "DetectorGateway",
         lambda **kwargs: SimpleNamespace(**kwargs),
+        raising=False,
     )
     monkeypatch.setattr(
         fake_ros_node,
         "build_status_align_step",
         lambda cfg: SimpleNamespace(cfg=cfg),
+        raising=False,
     )
 
     node = fake_ros_node.PidAlignmentRosNode(

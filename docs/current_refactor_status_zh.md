@@ -6,15 +6,16 @@
 
 ## 1. 当前实现状态
 
-当前项目已经从早期的单文件实验路径，进入 runner-based workflow 架构。已完成的最小可验证链路是 **STATUS_ALIGN 状态对齐 MVP**，覆盖：
+当前项目已经从早期的单文件实验路径，进入统一的 runner-based workflow runtime。当前同一个 ROS 节点既支持单 phase 部分测试，也支持按 `phase_sequence` 串起更长流程，覆盖：
 
 - workflow 状态模型：`src/workflow/types.py`
-- phase 控制器：`src/workflow/phase_controller.py`
+- phase runner contract 和 engine：`src/workflow/phase_runner.py`、`src/workflow/engine.py`
+- 共享资源 session：`src/workflow/runtime.py`
 - PID 控制器：`src/algorithms/pid.py`
 - status target 选择：`src/algorithms/target_selection.py`
 - status 对齐算法：`src/algorithms/status_align.py`
 - BaseDetect SDK 包装：`src/algorithms/detector_gateway.py`
-- runner core：`src/runners/pid_alignment_runner.py`
+- phase runners：`src/runners/phases/`
 - 当前 ROS 节点入口：`src/runners/pid_alignment_ros_node.py`
 - turtle adapter：`src/adapters/turtle_adapter.py`
 - robot adapter：`src/adapters/robot_adapter.py`
@@ -27,7 +28,7 @@ python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alig
 python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alignment.robot.yaml
 ```
 
-当前 MVP 只执行 `STATUS_ALIGN`，配置里通过 `phase_sequence: [STATUS_ALIGN]` 控制。`FORWARD_APPROACH`、`BASE_COORD` 和 full mission runner 仍是后续工作。
+当前默认配置仍保守使用 `phase_sequence: [STATUS_ALIGN]`。需要部分验证时可写 `[STATUS_ALIGN]` 或 `[FORWARD_APPROACH]`；需要更长机器人流程时可写 `[STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD]`。不再单独维护一个 full mission runner。
 
 ---
 
@@ -36,14 +37,15 @@ python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alig
 当前 runner-based flow 可以理解为：
 
 1. `pid_alignment_ros_node.py` 加载 workflow YAML。
-2. 节点通过 OpenCV 打开 `detector.input_source` 指定的摄像头或视频源。
-3. `DetectorGateway` 调 BaseDetect SDK 获取 status targets。
-4. `StatusAlignStep` 选择最接近 `status_align.target_x` 的目标，并用 PID 输出横向控制。
-5. runner 发布 workflow 状态、算法状态、环境状态、选中目标和 `/cmd_vel`。
-6. turtle 环境会额外通过 `TurtleAdapter` 把 workflow 横向 `linear.y` 映射为 turtlesim 的 `linear.x`，用于部分验证。
-7. robot 环境通过 `RobotAdapter` 直接透传 workflow velocity，供真实机器人接线层消费。
+2. 节点创建 ROS publishers、adapter、`WorkflowResources` 和 `WorkflowEngine`，但不直接打开相机或创建 detector。
+3. `WorkflowEngine` 按 `phase_sequence` 调用当前 phase runner。
+4. `STATUS_ALIGN` 和 `BASE_COORD` 通过共享 `VisionSession` 懒加载并复用 OpenCV capture 和 `DetectorGateway`。
+5. `FORWARD_APPROACH` 不访问视觉资源，只按固定距离/速度输出开环前进命令。
+6. runner 发布 workflow 状态、算法状态、环境状态、选中目标、base 坐标和 `/cmd_vel`。
+7. turtle 环境会额外通过 `TurtleAdapter` 把 workflow 横向 `linear.y` 映射为 turtlesim 的 `linear.x`，用于部分验证。
+8. robot 环境通过 `RobotAdapter` 直接透传 workflow velocity，供真实机器人接线层消费。
 
-当前仍然不是完整比赛链路：它验证的是 status 对齐这一段，不负责前进接近、base 坐标输出或完整任务收尾。
+当前仍然不是完整比赛链路：角度/朝向 PID、真实机器人现场联调和完整任务收尾仍需后续实现或验证。
 
 ---
 
@@ -58,15 +60,18 @@ python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alig
 
 - `environment`: `turtle` 或 `robot`
 - `start_phase`: 当前通常是 `STATUS_ALIGN`
-- `phase_sequence`: 当前 MVP 使用 `[STATUS_ALIGN]`
+- `phase_sequence`: 本次运行的任务序列，例如 `[STATUS_ALIGN]`、`[FORWARD_APPROACH]` 或 `[STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD]`
 - `detector.sdk_config`: BaseDetect SDK 配置路径
 - `detector.status_profile`: status 检测 profile
+- `detector.base_coord_profile`: base-coordinate 检测 profile
 - `detector.input_source`: 摄像头索引或视频路径
 - `topics.cmd_topic`: workflow velocity topic
 - `topics.selected_status_topic`: 当前选中 status target topic
 - `adapter.turtle_cmd_topic`: turtle 模式下的 turtlesim 命令 topic
 - `status_align.target_x`: 对齐目标像素 x
 - `status_align.tolerance_px`: 对齐容差
+- `forward_approach.speed_mps` / `distance_m`: 开环前进阶段参数
+- `base_coord.publish_topic`: base-coordinate 输出 topic
 
 历史计划文档里出现过 `one_shot` 字段；当前代码已使用 `phase_sequence` 替代。
 
@@ -110,9 +115,10 @@ python -m pytest -q
 - 真机 `/cmd_vel` 坐标轴方向和幅值是否正确
 - PID 参数在真实系统里的稳定性
 - 机器人底盘约束、限速、急停、碰撞风险
-- `FORWARD_APPROACH`、`BASE_COORD`、full mission runner
+- 角度/朝向 PID phase
+- 完整任务收尾
 
-也就是说，当前可以说 **STATUS_ALIGN MVP 的模块化架构和核心逻辑已经具备**，但不能说完整比赛流程已经完成。
+也就是说，当前可以说 **统一 phase runtime、STATUS_ALIGN、FORWARD_APPROACH 和 BASE_COORD 的核心结构已经具备**，但不能说完整比赛流程已经完成。
 
 ---
 
@@ -171,7 +177,9 @@ python -m pytest -q
 - BaseDetect gateway 包装
 - config-driven runner startup
 - 当前 ROS node 入口：`pid_alignment_ros_node.py`
-- OpenCV camera/video input 接线
+- 懒加载并跨视觉 phase 复用 OpenCV camera/video input
+- `FORWARD_APPROACH` phase runner
+- `BASE_COORD` phase runner
 - turtle adapter 和 turtle command bridge
 - robot adapter velocity passthrough
 - 单元测试和入口构建测试
@@ -181,11 +189,9 @@ python -m pytest -q
 - turtle pose feedback / 闭环仿真
 - 真实机器人现场联调
 - 真机底盘方向、限速和安全约束验证
-- `FORWARD_APPROACH`
-- `BASE_COORD`
-- full mission runner
+- 角度/朝向 PID phase
 - 比赛级完整流程切换
 
 ### 当前状态的一句话描述
 
-> RobotFetch 当前已经完成 STATUS_ALIGN MVP 的 runner-based ROS 节点和核心测试；后续重点是实机/仿真联调，以及实现 forward approach、base coord 和 full mission runner。
+> RobotFetch 当前已经完成统一 phase runtime、STATUS_ALIGN、FORWARD_APPROACH 和 BASE_COORD 的核心测试；后续重点是实机/仿真联调、角度/朝向 PID，以及比赛级完整流程收尾。

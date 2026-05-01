@@ -40,6 +40,7 @@ DEFAULT_CAMERA_FALLBACKS = (
 class DetectorConfig:
     sdk_config: Path
     status_profile: str
+    base_coord_profile: str
     input_source: str
     camera_fallbacks: tuple[CameraFallbackConfig, ...]
 
@@ -56,6 +57,13 @@ class ForwardApproachConfig:
 
 
 @dataclass(frozen=True)
+class BaseCoordConfig:
+    publish_topic: str
+    frame_id: str
+    complete_on_first_target: bool
+
+
+@dataclass(frozen=True)
 class PidAlignmentWorkflowConfig:
     environment: str
     start_phase: str
@@ -64,6 +72,7 @@ class PidAlignmentWorkflowConfig:
     tolerance_px: float
     max_speed: float
     forward_approach: ForwardApproachConfig
+    base_coord: BaseCoordConfig
     topics: TopicConfig
     detector: DetectorConfig
     adapter: AdapterConfig

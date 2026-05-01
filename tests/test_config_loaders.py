@@ -182,6 +182,49 @@ pid_alignment_workflow:
     assert cfg.detector.camera_fallbacks == DEFAULT_CAMERA_FALLBACKS
 
 
+def test_load_pid_alignment_config_reads_base_coord_fields(tmp_path: Path):
+    config_path = tmp_path / "pid_alignment.base_coord.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  phase_sequence: [STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD]
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    base_coord_profile: base_coord_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+  forward_approach:
+    speed_mps: 0.11
+    distance_m: 0.44
+  base_coord:
+    publish_topic: /robot_fetch/base_coord_targets
+    frame_id: camera_link
+    complete_on_first_target: true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_pid_alignment_config(config_path)
+
+    assert cfg.detector.base_coord_profile == "base_coord_competition"
+    assert cfg.base_coord.publish_topic == "/robot_fetch/base_coord_targets"
+    assert cfg.base_coord.frame_id == "camera_link"
+    assert cfg.base_coord.complete_on_first_target is True
+
+
 def test_load_pid_alignment_config_rejects_zero_forward_approach_speed(
     tmp_path: Path,
 ):

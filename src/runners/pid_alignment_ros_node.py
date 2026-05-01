@@ -22,21 +22,21 @@ if str(SRC_ROOT) not in sys.path:
 
 from adapters.robot_adapter import RobotAdapter
 from adapters.turtle_adapter import TurtleAdapter
-from algorithms.detector_gateway import DetectorGateway
-from algorithms.pid import PIDConfig
-from algorithms.status_align import StatusAlignConfig, StatusAlignStep
 from config.loaders import load_pid_alignment_config
-from config.models import CameraFallbackConfig, PidAlignmentWorkflowConfig
-from runners.pid_alignment_runner import (
-    RunnerConfig,
-    log_deduplicated,
-    run_forward_approach_once,
-    run_status_align_once,
+from config.models import PidAlignmentWorkflowConfig
+from runners.phases.registry import build_phase_registry
+from runners.phases.status_align_phase import build_status_align_step
+from workflow.engine import WorkflowEngine
+from workflow.runtime import (
+    WorkflowContext,
+    WorkflowPublishers,
+    WorkflowResources,
+    _resolve_input_source,
+    build_capture,
+    build_readable_v4l2_mjpg_capture,
+    build_v4l2_mjpg_capture,
 )
-from workflow.types import Phase, parse_phase
-
-
-ZERO_CMD_MESSAGE = {"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}
+from workflow.types import Phase
 
 
 class _StringPublisher:
@@ -119,6 +119,31 @@ class _SelectedTargetPublisher:
         self._ros_publisher.publish(message)
 
 
+class _BaseCoordPublisher:
+    def __init__(
+        self,
+        *,
+        ros_publisher: Any,
+        message_type: type[PointStamped],
+        clock_getter: Callable[[], Any],
+    ) -> None:
+        self._ros_publisher = ros_publisher
+        self._message_type = message_type
+        self._clock_getter = clock_getter
+
+    def publish(self, payload: dict[str, object]) -> None:
+        message = self._message_type()
+        now = self._clock_getter().now()
+        if hasattr(message, "header"):
+            if hasattr(now, "to_msg"):
+                message.header.stamp = now.to_msg()
+            message.header.frame_id = str(payload.get("frame_id", ""))
+        message.point.x = float(payload.get("x", 0.0))
+        message.point.y = float(payload.get("y", 0.0))
+        message.point.z = float(payload.get("z", 0.0))
+        self._ros_publisher.publish(message)
+
+
 def _build_twist_message(payload: dict[str, float]) -> Any:
     return SimpleNamespace(
         linear=SimpleNamespace(
@@ -148,97 +173,6 @@ def build_adapter(
     if environment == "robot":
         return RobotAdapter(env_status_publisher=env_status_publisher)
     raise ValueError(f"Unsupported environment: {environment}")
-
-
-def build_status_align_step(cfg: PidAlignmentWorkflowConfig) -> StatusAlignStep:
-    return StatusAlignStep(
-        cfg=StatusAlignConfig(
-            pid=PIDConfig(
-                kp=0.006,
-                ki=0.0,
-                kd=0.0008,
-                output_limit=cfg.max_speed,
-                integral_limit=1000.0,
-                deadband=0.0,
-                derivative_alpha=0.35,
-            ),
-            target_x=cfg.target_x,
-            tolerance_px=cfg.tolerance_px,
-            allowed_labels={"spearhead", "fist", "palm"},
-            stable_labels=set(),
-            use_stable_labels=True,
-        )
-    )
-
-
-def build_capture(input_source: str) -> Any:
-    import cv2
-
-    source = _resolve_input_source(input_source)
-    capture = cv2.VideoCapture(source)
-    if hasattr(capture, "isOpened") and not capture.isOpened():
-        raise RuntimeError(f"Unable to open source: {input_source}")
-    return capture
-
-
-def build_v4l2_mjpg_capture(input_source: str, config: CameraFallbackConfig) -> Any:
-    import cv2
-
-    source = _resolve_input_source(input_source)
-    if not isinstance(source, int):
-        raise RuntimeError(f"V4L2 MJPG fallback requires numeric source: {input_source}")
-    if config.backend != "v4l2":
-        raise ValueError(f"Unsupported camera fallback backend: {config.backend}")
-
-    capture = cv2.VideoCapture(source, cv2.CAP_V4L2)
-    if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
-        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
-    if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
-        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
-    capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*config.fourcc))
-    capture.set(cv2.CAP_PROP_FRAME_WIDTH, config.width)
-    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, config.height)
-    capture.set(cv2.CAP_PROP_FPS, config.fps)
-    if hasattr(capture, "isOpened") and not capture.isOpened():
-        release = getattr(capture, "release", None)
-        if callable(release):
-            release()
-        raise RuntimeError(
-            "Unable to open source with camera fallback: "
-            f"{input_source} {config.describe()}"
-        )
-    return capture
-
-
-def build_readable_v4l2_mjpg_capture(
-    input_source: str,
-    configs: tuple[CameraFallbackConfig, ...],
-) -> tuple[Any, Any, CameraFallbackConfig]:
-    last_error: Exception | None = None
-    for config in configs:
-        capture = None
-        try:
-            capture = build_v4l2_mjpg_capture(input_source, config)
-            ok, frame = capture.read()
-            if ok:
-                return capture, frame, config
-        except Exception as exc:
-            last_error = exc
-        if capture is not None:
-            release = getattr(capture, "release", None)
-            if callable(release):
-                release()
-
-    message = f"Unable to read from camera fallback source: {input_source}"
-    if last_error is not None:
-        message = f"{message}; last_error={last_error!r}"
-    raise RuntimeError(message)
-
-
-def _resolve_input_source(input_source: str) -> str | int:
-    if input_source.isdigit():
-        return int(input_source)
-    return input_source
 
 
 def _build_capture_log_message(input_source: str, capture: Any) -> str:
@@ -296,44 +230,15 @@ def _format_multiline_log(
     return "\n".join([title, *(f"  {key}={value}" for key, value in fields)])
 
 
-def _format_camera_fallback_log(
-    title: str,
-    *,
-    input_source: str,
-    config: CameraFallbackConfig,
-) -> str:
-    return _format_multiline_log(
-        title,
-        (
-            ("source", input_source),
-            ("backend", config.backend),
-            ("fourcc", config.fourcc),
-            ("width", config.width),
-            ("height", config.height),
-            ("fps", f"{config.fps:g}"),
-        ),
-    )
+def _enum_or_value(value: Any) -> str:
+    enum_value = getattr(value, "value", None)
+    return str(enum_value if enum_value is not None else value)
 
 
 class PidAlignmentRosNode(Node):
     def __init__(self, *, cfg: PidAlignmentWorkflowConfig) -> None:
         super().__init__("pid_alignment_runner")
         self._cfg = cfg
-        self._capture_released = False
-        self._capture_read_fallback_attempted = False
-        self._runner_cfg = RunnerConfig(
-            cmd_topic=cfg.topics.cmd_topic,
-            selected_status_topic=cfg.topics.selected_status_topic,
-            workflow_phase_topic=cfg.topics.workflow_phase_topic,
-            algo_status_topic=cfg.topics.algo_status_topic,
-            env_status_topic=cfg.topics.env_status_topic,
-            frame_id="camera_link",
-            phase_sequence=cfg.phase_sequence,
-            target_x=cfg.target_x,
-            forward_approach_speed_mps=cfg.forward_approach.speed_mps,
-            forward_approach_distance_m=cfg.forward_approach.distance_m,
-        )
-        self._active_phase = parse_phase(cfg.start_phase)
 
         workflow_cmd_ros_publisher = (
             self.create_publisher(Twist, cfg.topics.cmd_topic, 10)
@@ -365,6 +270,13 @@ class PidAlignmentRosNode(Node):
             message_type=PointStamped,
             clock_getter=self.get_clock,
         )
+        self._base_coord_pub = _BaseCoordPublisher(
+            ros_publisher=self.create_publisher(
+                PointStamped, cfg.base_coord.publish_topic, 10
+            ),
+            message_type=PointStamped,
+            clock_getter=self.get_clock,
+        )
 
         self._adapter = build_adapter(
             environment=cfg.environment,
@@ -378,32 +290,29 @@ class PidAlignmentRosNode(Node):
                 self._adapter.on_cmd_vel if cfg.environment == "turtle" else None
             ),
         )
-        self._gateway = None
-        self._status_align = None
-        self._cap = None
-        if self._active_phase == Phase.STATUS_ALIGN:
-            self._gateway = DetectorGateway(
-                config_path=cfg.detector.sdk_config,
-                initial_profile=cfg.detector.status_profile,
-            )
-            self._status_align = build_status_align_step(cfg)
-            self._cap = build_capture(cfg.detector.input_source)
+        self._resources = WorkflowResources(cfg=cfg, logger=self.get_logger())
+        self._workflow_context = WorkflowContext(
+            cfg=cfg,
+            resources=self._resources,
+            publishers=WorkflowPublishers(
+                cmd_pub=self._cmd_pub,
+                phase_pub=self._phase_pub,
+                algo_status_pub=self._algo_status_pub,
+                env_status_pub=self._env_status_pub,
+                selected_target_pub=self._selected_target_pub,
+                base_coord_pub=self._base_coord_pub,
+            ),
+            logger=self.get_logger(),
+            clock=self.get_clock(),
+            adapter=self._adapter,
+        )
+        self._engine = WorkflowEngine(
+            phase_sequence=cfg.phase_sequence,
+            runners=build_phase_registry(),
+            context=self._workflow_context,
+        )
         self._timer = self.create_timer(0.1, self._on_timer)
         self.get_logger().info(_build_startup_log_message(cfg))
-        if self._cap is None:
-            self.get_logger().info(
-                _format_multiline_log(
-                    "capture startup skipped",
-                    (
-                        ("reason", "start_phase_does_not_require_status_align"),
-                        ("start_phase", self._active_phase.value),
-                    ),
-                )
-            )
-        else:
-            self.get_logger().info(
-                _build_capture_log_message(cfg.detector.input_source, self._cap)
-            )
 
     @property
     def cmd_pub(self) -> _TwistPublisher:
@@ -425,146 +334,39 @@ class PidAlignmentRosNode(Node):
     def selected_target_pub(self) -> _SelectedTargetPublisher:
         return self._selected_target_pub
 
+    @property
+    def base_coord_pub(self) -> _BaseCoordPublisher:
+        return self._base_coord_pub
+
     def _is_ros_context_ok(self) -> bool:
         return rclpy.ok()
 
     def destroy_node(self) -> bool:
-        if not self._capture_released:
-            release = getattr(self._cap, "release", None)
-            if callable(release):
-                release()
-            self._capture_released = True
+        resources = getattr(self, "_resources", None)
+        if resources is not None:
+            resources.release_all()
         return super().destroy_node()
 
     def _on_timer(self) -> None:
-        active_phase = getattr(self, "_active_phase", Phase.STATUS_ALIGN)
-        if active_phase == Phase.FORWARD_APPROACH:
-            self._adapter.on_phase(Phase.FORWARD_APPROACH.value)
-            cycle = run_forward_approach_once(
-                node=self,
-                cfg=self._runner_cfg,
-            )
-            self._handle_cycle_stop_if_requested(cycle)
-            return
+        result = self._engine.tick()
+        self._handle_engine_stop_if_requested(result)
 
-        ok, frame = self._cap.read()
-        if not ok:
-            ok, frame = self._try_read_with_capture_fallback()
-        if not ok:
-            self._cmd_pub.publish(ZERO_CMD_MESSAGE)
-            log_deduplicated(
-                node=self,
-                logger=self.get_logger(),
-                level="warning",
-                message=(
-                    "Frame read failed; published zero velocity to "
-                    f"{self._runner_cfg.cmd_topic}"
-                ),
-            )
+    def _handle_engine_stop_if_requested(self, result: Any) -> None:
+        if getattr(result, "stop_reason", None) is None:
             return
-
-        self._adapter.on_phase(self._cfg.start_phase)
-        cycle = run_status_align_once(
-            node=self,
-            frame=frame,
-            detector_gateway=self._gateway,
-            status_align_step=self._status_align,
-            cfg=self._runner_cfg,
-        )
-        if cycle.stop_requested:
-            self._handle_cycle_stop_if_requested(cycle)
-            return
-        if getattr(cycle, "next_phase", None) == Phase.FORWARD_APPROACH.value:
-            self._active_phase = Phase.FORWARD_APPROACH
-            log_deduplicated(
-                node=self,
-                logger=self.get_logger(),
-                level="info",
-                message=_format_multiline_log(
-                    "phase sequence advancing",
-                    (
-                        ("from_phase", cycle.phase),
-                        ("to_phase", cycle.next_phase),
-                        ("algo_status", cycle.algo_status),
-                    ),
-                ),
-            )
-
-    def _handle_cycle_stop_if_requested(self, cycle: Any) -> None:
-        if not getattr(cycle, "stop_requested", False):
-            return
-        log_deduplicated(
-            node=self,
-            logger=self.get_logger(),
-            level="info",
-            message=_format_multiline_log(
+        self.get_logger().info(
+            _format_multiline_log(
                 "phase sequence stop requested",
                 (
-                    ("reason", cycle.stop_reason),
-                    ("phase", cycle.phase),
-                    ("algo_status", cycle.algo_status),
+                    ("reason", result.stop_reason),
+                    ("phase", _enum_or_value(result.phase)),
+                    ("algo_status", _enum_or_value(result.algo_status)),
                     ("action", "stopping_node"),
                 ),
             ),
         )
         self.destroy_node()
         rclpy.try_shutdown()
-
-    def _try_read_with_capture_fallback(self) -> tuple[bool, Any]:
-        input_source = self._cfg.detector.input_source
-        if self._capture_read_fallback_attempted:
-            return False, None
-        if not isinstance(_resolve_input_source(input_source), int):
-            return False, None
-
-        self._capture_read_fallback_attempted = True
-        release = getattr(self._cap, "release", None)
-        if callable(release):
-            release()
-
-        for config in self._cfg.detector.camera_fallbacks:
-            log_deduplicated(
-                node=self,
-                logger=self.get_logger(),
-                level="warning",
-                message=_format_camera_fallback_log(
-                    "Frame read failed; trying camera fallback",
-                    input_source=input_source,
-                    config=config,
-                ),
-            )
-            try:
-                self._cap, frame, selected_config = build_readable_v4l2_mjpg_capture(
-                    input_source,
-                    (config,),
-                )
-            except RuntimeError:
-                continue
-
-            shape = getattr(frame, "shape", None)
-            self.get_logger().info(
-                _format_multiline_log(
-                    "Camera fallback selected",
-                    (
-                        ("source", input_source),
-                        ("backend", selected_config.backend),
-                        ("fourcc", selected_config.fourcc),
-                        ("width", selected_config.width),
-                        ("height", selected_config.height),
-                        ("fps", f"{selected_config.fps:g}"),
-                        ("shape", shape),
-                    ),
-                )
-            )
-            return True, frame
-
-        log_deduplicated(
-            node=self,
-            logger=self.get_logger(),
-            level="warning",
-            message=f"All camera fallback configs failed for source={input_source}",
-        )
-        return False, None
 
 
 def _build_startup_log_message(cfg: PidAlignmentWorkflowConfig) -> str:
@@ -576,8 +378,10 @@ def _build_startup_log_message(cfg: PidAlignmentWorkflowConfig) -> str:
             ("start_phase", cfg.start_phase),
             ("input_source", cfg.detector.input_source),
             ("status_profile", cfg.detector.status_profile),
+            ("base_coord_profile", cfg.detector.base_coord_profile),
             ("cmd_topic", cfg.topics.cmd_topic),
             ("selected_status_topic", cfg.topics.selected_status_topic),
+            ("base_coord_topic", cfg.base_coord.publish_topic),
             ("workflow_phase_topic", cfg.topics.workflow_phase_topic),
             ("algo_status_topic", cfg.topics.algo_status_topic),
             ("env_status_topic", cfg.topics.env_status_topic),

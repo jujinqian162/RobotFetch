@@ -8,6 +8,7 @@ import yaml
 from .models import (
     DEFAULT_CAMERA_FALLBACKS,
     AdapterConfig,
+    BaseCoordConfig,
     CameraFallbackConfig,
     DetectorConfig,
     ForwardApproachConfig,
@@ -34,6 +35,9 @@ def load_pid_alignment_config(
     )
     forward_approach = _optional_mapping_field(
         root, "forward_approach", parent="pid_alignment_workflow"
+    )
+    base_coord = _optional_mapping_field(
+        root, "base_coord", parent="pid_alignment_workflow"
     )
 
     start_phase = _require_defaulted_str_field(
@@ -81,6 +85,26 @@ def load_pid_alignment_config(
                 parent="pid_alignment_workflow.forward_approach",
             ),
         ),
+        base_coord=BaseCoordConfig(
+            publish_topic=_require_defaulted_str_field(
+                base_coord,
+                "publish_topic",
+                default="/robot_fetch/base_coord_targets",
+                parent="pid_alignment_workflow.base_coord",
+            ),
+            frame_id=_require_defaulted_str_field(
+                base_coord,
+                "frame_id",
+                default="camera_link",
+                parent="pid_alignment_workflow.base_coord",
+            ),
+            complete_on_first_target=_require_defaulted_bool_field(
+                base_coord,
+                "complete_on_first_target",
+                default=True,
+                parent="pid_alignment_workflow.base_coord",
+            ),
+        ),
         topics=TopicConfig(
             cmd_topic=_require_str_field(
                 topics, "cmd_topic", parent="pid_alignment_workflow.topics"
@@ -120,6 +144,12 @@ def load_pid_alignment_config(
             status_profile=_require_str_field(
                 detector,
                 "status_profile",
+                parent="pid_alignment_workflow.detector",
+            ),
+            base_coord_profile=_require_defaulted_str_field(
+                detector,
+                "base_coord_profile",
+                default="base_coord_competition",
                 parent="pid_alignment_workflow.detector",
             ),
             input_source=_require_str_field(

@@ -4,12 +4,12 @@ pid_alignment_workflow:
   # - robot: publish normal workflow topics only; the real base should consume cmd_topic.
   environment: robot
 
-  # First phase to enter when this runner starts.
+  # First phase to enter when this unified workflow node starts.
   start_phase: STATUS_ALIGN
 
-  # Ordered phases to execute for this run.
-  # Use a single-item sequence for isolated phase testing, e.g. [STATUS_ALIGN].
-  # Add FORWARD_APPROACH after STATUS_ALIGN to move forward by a fixed distance.
+  # Ordered mission/action phases for this run.
+  # Shorten the same sequence for partial tests, e.g. [STATUS_ALIGN].
+  # Use [STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD] for a longer robot flow.
   phase_sequence: [STATUS_ALIGN]
 
   detector:
@@ -19,8 +19,11 @@ pid_alignment_workflow:
     # BaseDetect profile used for status-target detection during STATUS_ALIGN.
     status_profile: status_competition
 
+    # BaseDetect profile used for 3D target output during BASE_COORD.
+    base_coord_profile: base_coord_competition
+
     # OpenCV input source. "0" means camera index 0; a video file path can be used for replay.
-    input_source: "0"
+    input_source: "test-assets/test7.mp4"
 
     # Ordered fallback capture modes used when default OpenCV capture opens but frame reads fail.
     # Reorder these entries when the model is sensitive to camera resolution/FPS.
@@ -79,3 +82,9 @@ pid_alignment_workflow:
 
     # Fixed forward distance. Runtime duration is distance_m / speed_mps.
     distance_m: 0.2
+
+  base_coord:
+    # PointStamped output for base-coordinate targets during BASE_COORD.
+    publish_topic: /robot_fetch/base_coord_targets
+    frame_id: camera_link
+    complete_on_first_target: true

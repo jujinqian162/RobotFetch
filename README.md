@@ -46,18 +46,19 @@
 
 ## 当前核心流程
 
-目前已经拆出来的最小闭环是：
+当前 runner-based workflow 已经统一为一个 ROS 节点和一套 phase runtime：
 
-1. runner 进入 `STATUS_ALIGN`
-2. `DetectorGateway` 从 BaseDetect 读取 status targets
-3. `StatusAlignStep` 选择目标并输出 PID 横向控制量
-4. runner 发布：
+1. `src/runners/pid_alignment_ros_node.py` 创建 ROS publisher、adapter、workflow resources 和 `WorkflowEngine`
+2. `phase_sequence` 决定本次运行的任务链路，单阶段测试和更长流程都走同一个节点
+3. `STATUS_ALIGN` 通过共享 `VisionSession` 读取 status targets，运行图像 x 方向 PID 对齐
+4. `FORWARD_APPROACH` 不访问相机，按固定速度/距离做开环前进
+5. `BASE_COORD` 复用同一个 `VisionSession`，切到 `base_coord` profile 并发布 3D 坐标
+6. runtime 按 phase runner 的结果发布：
    - `/workflow/phase`
    - `/workflow/algo_status`
    - `/workflow/env_status`
    - `/cmd_vel`
-5. `TurtleWorkflowNode` 或后续真实环境 adapter 消费这些 topic
-6. turtle 环境把算法侧 `linear.y` 映射为 turtlesim 的 `linear.x`，用于验证 PID 和 workflow 同步
+7. `TurtleWorkflowNode` 或真实环境 adapter 消费这些 topic；turtle 环境把算法侧 `linear.y` 映射为 turtlesim 的 `linear.x`，用于验证 PID 和 workflow 同步
 
 所以当前 README 里提到的 runner、turtle bridge、BaseDetect，并不是互相独立的小脚本，而是在服务同一条机器人任务链路。
 
@@ -115,11 +116,14 @@ source ./scripts/activate_dev_env.sh
 旧的 `src/terminal_pid_follower_node.py` 记录的是重构前的单节点实验路径，不再作为当前架构的启动方式。
 当前 refactored workflow 的启动入口是下面的 runner-based flow：`src/runners/pid_alignment_ros_node.py --config ...`。
 
-这个 runner 仍然覆盖 status 模式下的核心链路：
+这个节点覆盖同一个 sequence-based workflow：
 
 1. `status` 模式：按 `|cx - target_x|` 最小选择目标，PID 仅做横向对齐。
 2. 测试范围由 workflow YAML 中的 `phase_sequence` 控制；只想验证对齐时写 `[STATUS_ALIGN]`。
-3. 需要对齐后前移时写 `[STATUS_ALIGN, FORWARD_APPROACH]`。前移阶段不做 PID，也不依赖视觉闭环，而是按 `forward_approach.distance_m / forward_approach.speed_mps` 计算持续时间，持续发布固定前进速度，到时后发布零速并结束该阶段。
+3. 只验证前进阶段时写 `[FORWARD_APPROACH]`，该阶段不会初始化相机或 detector。
+4. 需要对齐后前移时写 `[STATUS_ALIGN, FORWARD_APPROACH]`。前移阶段不做 PID，也不依赖视觉闭环，而是按 `forward_approach.distance_m / forward_approach.speed_mps` 计算持续时间，持续发布固定前进速度，到时后发布零速并结束该阶段。
+5. 需要更长机器人流程时写 `[STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD]`。`BASE_COORD` 会切到 `detector.base_coord_profile`，发布 `base_coord.publish_topic`。
+6. 未来加入角度/朝向 PID 时，应作为更早的独立 phase，例如 `[ANGLE_ALIGN, STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD]`，而不是拆出第二个 runner。
 
 ### `target_x` 和检测坐标到底是什么规格
 
@@ -149,6 +153,9 @@ error_px = status_align.target_x - selected_status_target.cx
 - `forward_approach.speed_mps`：`FORWARD_APPROACH` 阶段的固定前进速度，必须大于 0
 - `forward_approach.distance_m`：`FORWARD_APPROACH` 阶段的固定前进距离，必须大于 0
 - `detector.status_profile`：status 检测 profile
+- `detector.base_coord_profile`：base-coordinate 检测 profile
+- `base_coord.publish_topic`：`BASE_COORD` 阶段的 3D 坐标输出话题
+- `base_coord.complete_on_first_target`：当前实现中有至少一个坐标目标时是否立即完成 `BASE_COORD`
 - `topics.publish_cmd_vel`：是否发布 workflow `cmd_topic`（通常是 `/cmd_vel`）；可设为 `false` 做只看状态/检测、不向底盘发速度的测试
 - `topics.selected_status_topic`：当前选中目标像素话题
 - `adapter.turtle_cmd_topic`：`environment: turtle` 时，将 runner 的 `/cmd_vel` 输出桥接为 turtlesim 可执行的速度话题
@@ -169,8 +176,7 @@ Real robot partial test:
 python src/runners/pid_alignment_ros_node.py --config configs/workflows/pid_alignment.robot.yaml
 ```
 
-The test scope is controlled in YAML with `phase_sequence`. Current partial-test configs use `phase_sequence: [STATUS_ALIGN]`.
-To include the open-loop forward motion after alignment, set `phase_sequence: [STATUS_ALIGN, FORWARD_APPROACH]` and tune `forward_approach.speed_mps` / `forward_approach.distance_m` in the same YAML.
+The configured `phase_sequence` is the mission/action sequence. Use `[STATUS_ALIGN]` for status-only validation, `[FORWARD_APPROACH]` for forward-only validation, and `[STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD]` for a longer robot flow. The same node handles all of these cases.
 
 ## 测试
 

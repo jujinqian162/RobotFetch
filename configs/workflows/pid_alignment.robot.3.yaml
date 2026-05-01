@@ -5,11 +5,12 @@ pid_alignment_workflow:
   environment: robot
 
   # First phase to enter when this unified workflow node starts.
-  start_phase: FORWARD_APPROACH
+  start_phase: STATUS_ALIGN
 
   # Ordered mission/action phases for this run.
-  # This file intentionally runs only FORWARD_APPROACH, so it must not open vision resources.
-  phase_sequence: [FORWARD_APPROACH]
+  # Shorten the same sequence for partial tests, e.g. [STATUS_ALIGN].
+  # Use [STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD] for a longer robot flow.
+  phase_sequence: [STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD]
 
   detector:
     # BaseDetect SDK config path, relative to the RobotFetch project root unless absolute.
@@ -22,7 +23,7 @@ pid_alignment_workflow:
     base_coord_profile: base_coord_competition
 
     # OpenCV input source. "0" means camera index 0; a video file path can be used for replay.
-    input_source: "0"
+    input_source: "test-assets/test7.mp4"
 
     # Ordered fallback capture modes used when default OpenCV capture opens but frame reads fail.
     # Reorder these entries when the model is sensitive to camera resolution/FPS.
@@ -77,10 +78,10 @@ pid_alignment_workflow:
 
   forward_approach:
     # Open-loop forward speed after STATUS_ALIGN succeeds.
-    speed_mps: 0.5
+    speed_mps: 0.08
 
     # Fixed forward distance. Runtime duration is distance_m / speed_mps.
-    distance_m: 0.4
+    distance_m: 0.2
 
   base_coord:
     # PointStamped output for base-coordinate targets during BASE_COORD.
