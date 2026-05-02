@@ -111,9 +111,18 @@ class VisionSession:
             _build_capture_log_message(cfg.detector.input_source, self._capture),
         )
         try:
+            debug_cfg = getattr(cfg, "debug", None)
+            debug_enabled = bool(getattr(debug_cfg, "enable", False))
+            export_debug_video_path = (
+                getattr(debug_cfg, "export_basedetect_video", None)
+                if debug_enabled
+                else None
+            )
             self._detector_gateway = gateway_factory(
                 config_path=cfg.detector.sdk_config,
                 initial_profile=None,
+                debug=debug_enabled,
+                export_debug_video_path=export_debug_video_path,
             )
         except Exception:
             release = getattr(self._capture, "release", None)
@@ -154,10 +163,19 @@ class VisionSession:
     def release(self) -> None:
         if self._released:
             return
-        release = getattr(self._capture, "release", None)
-        if callable(release):
-            release()
-        self._released = True
+        try:
+            detector_release = getattr(self._detector_gateway, "release", None)
+            if callable(detector_release):
+                detector_release()
+            else:
+                detector_close = getattr(self._detector_gateway, "close", None)
+                if callable(detector_close):
+                    detector_close()
+        finally:
+            release = getattr(self._capture, "release", None)
+            if callable(release):
+                release()
+            self._released = True
 
     def _try_read_with_capture_fallback(self) -> tuple[bool, Any]:
         input_source = self._cfg.detector.input_source

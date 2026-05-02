@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from config.models import CameraFallbackConfig
 from workflow.runtime import VisionSession, WorkflowResources
 
@@ -23,18 +25,35 @@ class FakeCapture:
 
 
 class FakeDetectorGateway:
-    def __init__(self, *, config_path: Path, initial_profile: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        config_path: Path,
+        initial_profile: str | None,
+        debug: bool = False,
+        export_debug_video_path: Path | None = None,
+    ) -> None:
         self.config_path = config_path
         self.profile_name = initial_profile
+        self.debug = debug
+        self.export_debug_video_path = export_debug_video_path
         self.switch_calls: list[str | None] = []
+        self.released = False
 
     def switch_profile(self, profile: str | None) -> None:
         self.switch_calls.append(profile)
         self.profile_name = profile
 
+    def release(self) -> None:
+        self.released = True
+
 
 def make_cfg() -> SimpleNamespace:
     return SimpleNamespace(
+        debug=SimpleNamespace(
+            enable=False,
+            export_basedetect_video=None,
+        ),
         detector=SimpleNamespace(
             sdk_config=Path("BaseDetect/configs/basedetect_sdk.yaml"),
             input_source="0",
@@ -46,17 +65,27 @@ def make_cfg() -> SimpleNamespace:
 def test_workflow_resources_creates_vision_session_lazily_and_reuses_it():
     capture = FakeCapture(reads=[])
     capture_calls: list[str] = []
-    detector_calls: list[tuple[Path, str | None]] = []
+    detector_calls: list[tuple[Path, str | None, bool, Path | None]] = []
 
     def capture_factory(input_source: str):
         capture_calls.append(input_source)
         return capture
 
-    def detector_gateway_factory(*, config_path: Path, initial_profile: str | None):
-        detector_calls.append((config_path, initial_profile))
+    def detector_gateway_factory(
+        *,
+        config_path: Path,
+        initial_profile: str | None,
+        debug: bool = False,
+        export_debug_video_path: Path | None = None,
+    ):
+        detector_calls.append(
+            (config_path, initial_profile, debug, export_debug_video_path)
+        )
         return FakeDetectorGateway(
             config_path=config_path,
             initial_profile=initial_profile,
+            debug=debug,
+            export_debug_video_path=export_debug_video_path,
         )
 
     resources = WorkflowResources(
@@ -77,8 +106,81 @@ def test_workflow_resources_creates_vision_session_lazily_and_reuses_it():
     assert first is second
     assert capture_calls == ["0"]
     assert detector_calls == [
-        (Path("BaseDetect/configs/basedetect_sdk.yaml"), None)
+        (Path("BaseDetect/configs/basedetect_sdk.yaml"), None, False, None)
     ]
+    assert capture.released is True
+
+
+def test_vision_session_passes_debug_export_video_to_detector_gateway():
+    capture = FakeCapture(reads=[])
+    export_path = Path("tmp/basedetect-debug.mp4")
+    gateway = FakeDetectorGateway(
+        config_path=Path("BaseDetect/configs/basedetect_sdk.yaml"),
+        initial_profile=None,
+    )
+    cfg = SimpleNamespace(
+        debug=SimpleNamespace(
+            enable=True,
+            export_basedetect_video=export_path,
+        ),
+        detector=SimpleNamespace(
+            sdk_config=Path("BaseDetect/configs/basedetect_sdk.yaml"),
+            input_source="0",
+            camera_fallbacks=(),
+        ),
+    )
+
+    session = VisionSession(
+        cfg=cfg,
+        logger=SimpleNamespace(info=lambda message: None, warning=lambda message: None),
+        capture_factory=lambda input_source: capture,
+        detector_gateway_factory=lambda **kwargs: FakeDetectorGateway(**kwargs),
+    )
+
+    assert session.detector_gateway.debug is True
+    assert session.detector_gateway.export_debug_video_path == export_path
+
+
+def test_vision_session_release_releases_detector_gateway():
+    capture = FakeCapture(reads=[])
+    gateway = FakeDetectorGateway(
+        config_path=Path("BaseDetect/configs/basedetect_sdk.yaml"),
+        initial_profile=None,
+    )
+    session = VisionSession(
+        cfg=make_cfg(),
+        logger=SimpleNamespace(info=lambda message: None, warning=lambda message: None),
+        capture_factory=lambda input_source: capture,
+        detector_gateway_factory=lambda **kwargs: gateway,
+    )
+
+    session.release()
+
+    assert capture.released is True
+    assert gateway.released is True
+
+
+def test_vision_session_release_keeps_capture_cleanup_if_detector_release_fails():
+    capture = FakeCapture(reads=[])
+    gateway = FakeDetectorGateway(
+        config_path=Path("BaseDetect/configs/basedetect_sdk.yaml"),
+        initial_profile=None,
+    )
+
+    def fail_release() -> None:
+        raise RuntimeError("detector cleanup failed")
+
+    gateway.release = fail_release
+    session = VisionSession(
+        cfg=make_cfg(),
+        logger=SimpleNamespace(info=lambda message: None, warning=lambda message: None),
+        capture_factory=lambda input_source: capture,
+        detector_gateway_factory=lambda **kwargs: gateway,
+    )
+
+    with pytest.raises(RuntimeError, match="detector cleanup failed"):
+        session.release()
+
     assert capture.released is True
 
 
@@ -114,6 +216,10 @@ def test_vision_session_retries_numeric_camera_with_configured_fallbacks():
     warning_messages: list[str] = []
     selected_frame = SimpleNamespace(shape=(600, 800, 3))
     cfg = SimpleNamespace(
+        debug=SimpleNamespace(
+            enable=False,
+            export_basedetect_video=None,
+        ),
         detector=SimpleNamespace(
             sdk_config=Path("BaseDetect/configs/basedetect_sdk.yaml"),
             input_source="0",

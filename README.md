@@ -148,6 +148,8 @@ error_px = status_align.target_x - selected_status_target.cx
 
 当前部分验证的关键配置项在 workflow YAML 中：
 
+- `debug.enable`：是否启用 workflow 级 BaseDetect debug；关闭时不会创建调试视频目录或写出视频
+- `debug.export_basedetect_video`：BaseDetect debug 叠加视频导出路径；相对路径按 RobotFetch 根目录解析，只有 `debug.enable: true` 时才会实际写出
 - `status_align.target_x`：状态模式下对齐目标像素 x
 - `status_align.max_speed`：状态对齐 PID 的速度输出上限，具体值以当前 workflow YAML 为准
 - `runtime.workflow_hz`：视觉读取、检测和 phase runner 的 workflow tick 频率

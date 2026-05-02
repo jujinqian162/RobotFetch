@@ -30,14 +30,24 @@ class BaseCoordTarget:
 
 
 class FakeDetector:
-    def __init__(self, *, config: str | Path, profile: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        config: str | Path,
+        profile: str | None = None,
+        debug: bool | None = None,
+        export_video: str | Path | None = None,
+    ) -> None:
         self.config = config
         self.profile = profile
+        self.debug = debug
+        self.export_video = export_video
         self.ready = False
         self.detect_calls: list[object] = []
         self.switch_calls: list[str | None] = []
         self.status_targets: list[StatusTarget] = []
         self.base_coord_targets: list[BaseCoordTarget] = []
+        self.released = False
 
     def switch_profile(self, profile: str | None) -> None:
         self.switch_calls.append(profile)
@@ -53,6 +63,9 @@ class FakeDetector:
     def latest_base_coord_targets(self) -> list[BaseCoordTarget]:
         return list(self.base_coord_targets)
 
+    def release(self) -> None:
+        self.released = True
+
 
 class FakeFrame:
     pass
@@ -66,6 +79,33 @@ def test_detector_gateway_builds_detector_with_initial_profile():
     )
 
     assert gateway.profile_name == "status_competition"
+
+
+def test_detector_gateway_forwards_debug_export_video_to_detector():
+    export_path = Path("tmp/basedetect-debug.mp4")
+
+    gateway = DetectorGateway(
+        config_path=Path("fake.yaml"),
+        initial_profile="status_competition",
+        detector_factory=FakeDetector,
+        debug=True,
+        export_debug_video_path=export_path,
+    )
+
+    assert gateway._detector.debug is True
+    assert gateway._detector.export_video == export_path
+
+
+def test_detector_gateway_release_forwards_to_detector():
+    gateway = DetectorGateway(
+        config_path=Path("fake.yaml"),
+        initial_profile="status_competition",
+        detector_factory=FakeDetector,
+    )
+
+    gateway.release()
+
+    assert gateway._detector.released is True
 
 
 

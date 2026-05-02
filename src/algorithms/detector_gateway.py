@@ -29,10 +29,17 @@ class DetectorGateway:
         config_path: Path,
         initial_profile: str | None = None,
         detector_factory: DetectorFactory | None = None,
+        debug: bool | None = None,
+        export_debug_video_path: str | Path | None = None,
     ) -> None:
         factory = detector_factory or _default_detector_factory
         self._profile_name = initial_profile
-        self._detector = factory(config=config_path, profile=initial_profile)
+        self._detector = factory(
+            config=config_path,
+            profile=initial_profile,
+            debug=debug,
+            export_video=export_debug_video_path,
+        )
 
     @property
     def profile_name(self) -> str | None:
@@ -56,8 +63,28 @@ class DetectorGateway:
             targets=self._detector.latest_base_coord_targets(),
         )
 
+    def release(self) -> None:
+        release = getattr(self._detector, "release", None)
+        if callable(release):
+            release()
+            return
+        close = getattr(self._detector, "close", None)
+        if callable(close):
+            close()
 
-def _default_detector_factory(*, config: Path, profile: str | None) -> Any:
+
+def _default_detector_factory(
+    *,
+    config: Path,
+    profile: str | None,
+    debug: bool | None = None,
+    export_video: str | Path | None = None,
+) -> Any:
     from sdk import Detector
 
-    return Detector(config=config, profile=profile)
+    return Detector(
+        config=config,
+        profile=profile,
+        debug=debug,
+        export_video=export_video,
+    )

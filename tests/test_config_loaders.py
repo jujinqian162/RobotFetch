@@ -31,6 +31,8 @@ def test_load_pid_alignment_config_reads_turtle_workflow_file():
         PROJECT_ROOT / "BaseDetect/configs/basedetect_sdk.yaml"
     )
     assert cfg.detector.status_profile == "status_competition"
+    assert cfg.debug.enable is False
+    assert cfg.debug.export_basedetect_video is None
     assert isinstance(cfg.detector.sdk_config, Path)
     assert all(
         isinstance(fallback, CameraFallbackConfig)
@@ -61,6 +63,8 @@ def test_load_pid_alignment_config_reads_robot_workflow_file():
     assert cfg.detector.sdk_config == (
         PROJECT_ROOT / "BaseDetect/configs/basedetect_sdk.yaml"
     )
+    assert cfg.debug.enable is False
+    assert cfg.debug.export_basedetect_video is None
     assert all(
         isinstance(fallback, CameraFallbackConfig)
         for fallback in cfg.detector.camera_fallbacks
@@ -181,6 +185,224 @@ pid_alignment_workflow:
     assert cfg.forward_approach.distance_m == 0.44
     assert cfg.topics.publish_cmd_vel is False
     assert cfg.detector.camera_fallbacks == DEFAULT_CAMERA_FALLBACKS
+
+
+def test_load_pid_alignment_config_reads_debug_export_video_path(tmp_path: Path):
+    config_path = tmp_path / "pid_alignment.debug.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  debug:
+    enable: true
+    export_basedetect_video: tmp/debug/basedetect.mp4
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_pid_alignment_config(config_path)
+
+    assert cfg.debug.enable is True
+    assert cfg.debug.export_basedetect_video == PROJECT_ROOT / "tmp/debug/basedetect.mp4"
+
+
+def test_load_pid_alignment_config_defaults_debug_disabled(tmp_path: Path):
+    config_path = tmp_path / "pid_alignment.no_debug.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_pid_alignment_config(config_path)
+
+    assert cfg.debug.enable is False
+    assert cfg.debug.export_basedetect_video is None
+
+
+def test_load_pid_alignment_config_ignores_export_path_when_debug_disabled(
+    tmp_path: Path,
+):
+    config_path = tmp_path / "pid_alignment.debug_disabled.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  debug:
+    enable: false
+    export_basedetect_video: tmp/debug/basedetect.mp4
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_pid_alignment_config(config_path)
+
+    assert cfg.debug.enable is False
+    assert cfg.debug.export_basedetect_video is None
+
+
+def test_load_pid_alignment_config_rejects_invalid_debug_export_path_when_disabled(
+    tmp_path: Path,
+):
+    config_path = tmp_path / "pid_alignment.debug_disabled_invalid_path.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  debug:
+    enable: false
+    export_basedetect_video: 123
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="debug.export_basedetect_video"):
+        load_pid_alignment_config(config_path)
+
+
+def test_load_pid_alignment_config_requires_export_path_when_debug_enabled(
+    tmp_path: Path,
+):
+    config_path = tmp_path / "pid_alignment.debug_missing_path.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  debug:
+    enable: true
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="debug.export_basedetect_video"):
+        load_pid_alignment_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "raw_export_path",
+    [
+        "null",
+        "123",
+        "[]",
+        '""',
+    ],
+)
+def test_load_pid_alignment_config_rejects_invalid_debug_export_path_when_enabled(
+    tmp_path: Path,
+    raw_export_path: str,
+):
+    config_path = tmp_path / "pid_alignment.debug_invalid_path.yaml"
+    config_path.write_text(
+        f"""
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  debug:
+    enable: true
+    export_basedetect_video: {raw_export_path}
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="debug.export_basedetect_video"):
+        load_pid_alignment_config(config_path)
 
 
 def test_load_pid_alignment_config_reads_cmd_vel_transform(tmp_path: Path):

@@ -11,6 +11,7 @@ from .models import (
     BaseCoordConfig,
     CameraFallbackConfig,
     CmdVelTransformConfig,
+    DebugConfig,
     DetectorConfig,
     ForwardApproachConfig,
     PidAlignmentWorkflowConfig,
@@ -32,6 +33,11 @@ def load_pid_alignment_config(
     runtime = _optional_mapping_field(
         root,
         "runtime",
+        parent="pid_alignment_workflow",
+    )
+    debug = _optional_mapping_field(
+        root,
+        "debug",
         parent="pid_alignment_workflow",
     )
     topics = _require_mapping_field(root, "topics", parent="pid_alignment_workflow")
@@ -87,6 +93,11 @@ def load_pid_alignment_config(
         ),
     )
     _validate_runtime_config(runtime_config)
+    debug_config = _load_debug_config(
+        debug=debug,
+        parent="pid_alignment_workflow.debug",
+        project_root=project_root,
+    )
 
     return PidAlignmentWorkflowConfig(
         environment=_require_str_field(root, "environment", parent="pid_alignment_workflow"),
@@ -227,6 +238,7 @@ def load_pid_alignment_config(
                 ),
             ),
         ),
+        debug=debug_config,
     )
 
 
@@ -427,6 +439,65 @@ def _require_path_field(
     mapping: dict[str, Any], key: str, *, parent: str, project_root: Path
 ) -> Path:
     raw_path = _require_str_field(mapping, key, parent=parent)
+    if raw_path.strip() == "":
+        raise ValueError(f"{parent}.{key} must not be empty")
+    return _resolve_path(raw_path, project_root=project_root)
+
+
+def _load_debug_config(
+    *,
+    debug: dict[str, Any],
+    parent: str,
+    project_root: Path,
+) -> DebugConfig:
+    enabled = _require_defaulted_bool_field(
+        debug,
+        "enable",
+        default=False,
+        parent=parent,
+    )
+    export_path = _optional_path_field(
+        debug,
+        "export_basedetect_video",
+        parent=parent,
+        project_root=project_root,
+    )
+    if not enabled:
+        return DebugConfig(
+            enable=False,
+            export_basedetect_video=None,
+        )
+
+    if export_path is None:
+        raise ValueError(
+            f"{parent}.export_basedetect_video is required when {parent}.enable is true"
+        )
+    return DebugConfig(
+        enable=enabled,
+        export_basedetect_video=export_path,
+    )
+
+
+def _optional_path_field(
+    mapping: dict[str, Any],
+    key: str,
+    *,
+    parent: str,
+    project_root: Path,
+) -> Path | None:
+    if key not in mapping:
+        return None
+    raw_path = mapping[key]
+    if raw_path is None:
+        return None
+    if not isinstance(raw_path, str):
+        raise ValueError(f"{parent}.{key} must be a non-empty string or null")
+    if raw_path.strip() == "":
+        raise ValueError(f"{parent}.{key} must be a non-empty string or null")
+    return _resolve_path(raw_path, project_root=project_root)
+
+
+def _resolve_path(raw_path: str, *, project_root: Path) -> Path:
     candidate = Path(raw_path)
     if candidate.is_absolute():
         return candidate

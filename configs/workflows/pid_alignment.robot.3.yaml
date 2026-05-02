@@ -17,6 +17,10 @@ pid_alignment_workflow:
     # If workflow does not refresh a command before this age, heartbeat publishes zero.
     command_timeout_s: 0.25
 
+  debug:
+    enable: true
+    export_basedetect_video: tmp/basedetect-debug.mp4
+
   # Ordered mission/action phases for this run.
   # Shorten the same sequence for partial tests, e.g. [STATUS_ALIGN].
   # Use [STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD] for a longer robot flow.
@@ -33,7 +37,7 @@ pid_alignment_workflow:
     base_coord_profile: base_coord_competition
 
     # OpenCV input source. "0" means camera index 0; a video file path can be used for replay.
-    input_source: "test-assets/test7.mp4"
+    input_source: "test-assets/test6.mp4"
 
     # Ordered fallback capture modes used when default OpenCV capture opens but frame reads fail.
     # Reorder these entries when the model is sensitive to camera resolution/FPS.

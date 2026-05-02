@@ -17,6 +17,10 @@ pid_alignment_workflow:
     # If workflow does not refresh a command before this age, heartbeat publishes zero.
     command_timeout_s: 0.25
 
+  debug:
+    enable: false
+    export_basedetect_video: tmp/basedetect-debug.mp4
+
   # Ordered mission/action phases for this run.
   # Shorten the same sequence for partial tests, e.g. [STATUS_ALIGN].
   # Use [STATUS_ALIGN, FORWARD_APPROACH, BASE_COORD] for a longer robot flow.

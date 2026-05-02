@@ -81,6 +81,12 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class DebugConfig:
+    enable: bool = False
+    export_basedetect_video: Path | None = None
+
+
+@dataclass(frozen=True)
 class PidAlignmentWorkflowConfig:
     environment: str
     start_phase: str
@@ -94,3 +100,4 @@ class PidAlignmentWorkflowConfig:
     topics: TopicConfig
     detector: DetectorConfig
     adapter: AdapterConfig
+    debug: DebugConfig = field(default_factory=DebugConfig)
