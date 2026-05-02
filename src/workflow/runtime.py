@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from algorithms.detector_gateway import DetectorGateway
@@ -39,10 +40,16 @@ class WorkflowContext:
     logger: Any
     clock: Any
     adapter: Any | None = None
+    heartbeat_stats: Callable[[], Any] | None = None
 
     def now_s(self) -> float:
         now = self.clock.now()
         return float(now.nanoseconds) * 1e-9
+
+    def consume_heartbeat_stats(self) -> Any:
+        if self.heartbeat_stats is None:
+            return SimpleNamespace(filled_heartbeat_frames=0)
+        return self.heartbeat_stats()
 
 
 class WorkflowResources:

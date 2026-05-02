@@ -4,6 +4,7 @@ from typing import Any
 
 from algorithms.pid import PIDConfig
 from algorithms.status_align import StatusAlignConfig, StatusAlignStep
+from runners.phases.heartbeat_stats import filled_heartbeat_frames
 from workflow.phase_runner import PhaseTickResult
 from workflow.types import AlgoStatus, EnvStatus, Phase
 
@@ -159,6 +160,7 @@ def _log_status_align_cycle(
             [
                 "status_align cycle",
                 f"  phase={Phase.STATUS_ALIGN.value}",
+                f"  filled_heartbeat_frames={filled_heartbeat_frames(context)}",
                 f"  detector_ready={bool(detection.ready)}",
                 f"  frame_shape={_format_frame_shape(frame)}",
                 f"  target_count={len(detection.targets)}",

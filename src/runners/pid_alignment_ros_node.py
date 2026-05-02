@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -10,6 +12,8 @@ from typing import Any, Callable
 import rclpy
 from geometry_msgs.msg import PointStamped, Twist
 from rclpy._rclpy_pybind11 import RCLError
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import Float32MultiArray, String
@@ -25,6 +29,7 @@ from adapters.robot_adapter import RobotAdapter
 from adapters.turtle_adapter import TurtleAdapter
 from config.loaders import load_pid_alignment_config
 from config.models import PidAlignmentWorkflowConfig
+from runners.command_heartbeat import BufferedCommandPublisher, ZERO_COMMAND
 from runners.phases.registry import build_phase_registry
 from runners.phases.status_align_phase import build_status_align_step
 from workflow.engine import WorkflowEngine
@@ -263,10 +268,24 @@ def _enum_or_value(value: Any) -> str:
     return str(enum_value if enum_value is not None else value)
 
 
+def _current_thread_name() -> str:
+    return threading.current_thread().name
+
+
+def _format_optional_ms(value_s: float | None) -> str:
+    if value_s is None:
+        return "None"
+    return f"{value_s * 1000.0:.3f}"
+
+
 class PidAlignmentRosNode(Node):
     def __init__(self, *, cfg: PidAlignmentWorkflowConfig) -> None:
         super().__init__("pid_alignment_runner")
         self._cfg = cfg
+        self._destroyed = False
+        self._stopping = False
+        self._command_stop_requested = False
+        self._last_command_publish_monotonic_s: float | None = None
 
         workflow_cmd_message_type: type[Any] = (
             Twist if cfg.environment == "turtle" else Float32MultiArray
@@ -326,7 +345,7 @@ class PidAlignmentRosNode(Node):
         cmd_vel_transform = CmdVelTransformAdapter.from_config(
             cfg.adapter.cmd_vel_transform
         )
-        self._cmd_pub = _WorkflowCommandPublisher(
+        self._command_output = _WorkflowCommandPublisher(
             ros_publisher=workflow_cmd_ros_publisher,
             message_type=workflow_cmd_message_type,
             workflow_publisher_type=workflow_publisher_type,
@@ -335,6 +354,8 @@ class PidAlignmentRosNode(Node):
             ),
             cmd_vel_transform=cmd_vel_transform,
         )
+        self._command_buffer = BufferedCommandPublisher(now_s=time.monotonic)
+        self._cmd_pub = self._command_buffer
         self._resources = WorkflowResources(cfg=cfg, logger=self.get_logger())
         self._workflow_context = WorkflowContext(
             cfg=cfg,
@@ -350,17 +371,29 @@ class PidAlignmentRosNode(Node):
             logger=self.get_logger(),
             clock=self.get_clock(),
             adapter=self._adapter,
+            heartbeat_stats=self._command_buffer.consume_workflow_cycle_stats,
         )
         self._engine = WorkflowEngine(
             phase_sequence=cfg.phase_sequence,
             runners=build_phase_registry(),
             context=self._workflow_context,
         )
-        self._timer = self.create_timer(0.1, self._on_timer)
+        workflow_period_s = 1.0 / cfg.runtime.workflow_hz
+        command_period_s = 1.0 / cfg.runtime.command_publish_hz
+        self._workflow_timer = self.create_timer(
+            workflow_period_s,
+            self._on_workflow_timer,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+        self._command_timer = self.create_timer(
+            command_period_s,
+            self._on_command_timer,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
         self.get_logger().info(_build_startup_log_message(cfg))
 
     @property
-    def cmd_pub(self) -> _TwistPublisher:
+    def cmd_pub(self) -> BufferedCommandPublisher:
         return self._cmd_pub
 
     @property
@@ -387,18 +420,75 @@ class PidAlignmentRosNode(Node):
         return rclpy.ok()
 
     def destroy_node(self) -> bool:
+        if getattr(self, "_destroyed", False):
+            return True
+        self._stopping = True
+        if hasattr(self, "_command_buffer") and hasattr(self, "_command_output"):
+            self._request_command_stop(reason="destroy_node")
         resources = getattr(self, "_resources", None)
         if resources is not None:
             resources.release_all()
+        self._destroyed = True
         return super().destroy_node()
 
-    def _on_timer(self) -> None:
-        result = self._engine.tick()
-        self._handle_engine_stop_if_requested(result)
+    def _on_workflow_timer(self) -> None:
+        if self._should_skip_timer_callback():
+            return
+        try:
+            result = self._engine.tick()
+            self._handle_engine_stop_if_requested(result)
+        except RCLError:
+            if self._should_skip_timer_callback():
+                return
+            raise
+
+    def _on_command_timer(self) -> None:
+        if self._should_skip_timer_callback():
+            return
+        try:
+            now = time.monotonic()
+            last_publish_s = self._last_command_publish_monotonic_s
+            if last_publish_s is not None:
+                dt_s = now - last_publish_s
+                max_expected_dt_s = 1.5 / self._cfg.runtime.command_publish_hz
+                if dt_s > max_expected_dt_s:
+                    self.get_logger().warning(
+                        _format_multiline_log(
+                            "command heartbeat publish delayed",
+                            (
+                                ("thread_role", "heartbeat"),
+                                ("thread_name", _current_thread_name()),
+                                ("dt_ms", _format_optional_ms(dt_s)),
+                                ("configured_hz", f"{self._cfg.runtime.command_publish_hz:.3f}"),
+                            ),
+                        )
+                    )
+            self._last_command_publish_monotonic_s = now
+            snapshot = self._command_buffer.snapshot_for_heartbeat(
+                timeout_s=self._cfg.runtime.command_timeout_s
+            )
+            self._command_output.publish(snapshot.command)
+        except RCLError:
+            if self._should_skip_timer_callback():
+                return
+            raise
+
+    def _request_command_stop(self, *, reason: str) -> None:
+        if getattr(self, "_command_stop_requested", False):
+            return
+        self._command_stop_requested = True
+        self._command_buffer.request_stop(reason=reason)
+        try:
+            self._command_output.publish(dict(ZERO_COMMAND))
+        except RCLError:
+            if self._should_skip_timer_callback():
+                return
+            raise
 
     def _handle_engine_stop_if_requested(self, result: Any) -> None:
         if getattr(result, "stop_reason", None) is None:
             return
+        self._stopping = True
         self.get_logger().info(
             _format_multiline_log(
                 "phase sequence stop requested",
@@ -410,9 +500,14 @@ class PidAlignmentRosNode(Node):
                 ),
             ),
         )
+        self._request_command_stop(reason=str(result.stop_reason))
         self.destroy_node()
         rclpy.try_shutdown()
 
+    def _should_skip_timer_callback(self) -> bool:
+        if getattr(self, "_destroyed", False) or getattr(self, "_stopping", False):
+            return True
+        return not self._is_ros_context_ok()
 
 def _build_startup_log_message(cfg: PidAlignmentWorkflowConfig) -> str:
     return _format_multiline_log(
@@ -439,6 +534,9 @@ def _build_startup_log_message(cfg: PidAlignmentWorkflowConfig) -> str:
             ("tolerance_px", f"{cfg.tolerance_px:.3f}"),
             ("forward_approach_speed_mps", f"{cfg.forward_approach.speed_mps:.3f}"),
             ("forward_approach_distance_m", f"{cfg.forward_approach.distance_m:.3f}"),
+            ("workflow_hz", f"{cfg.runtime.workflow_hz:.3f}"),
+            ("command_publish_hz", f"{cfg.runtime.command_publish_hz:.3f}"),
+            ("command_timeout_s", f"{cfg.runtime.command_timeout_s:.3f}"),
         ),
     )
 
@@ -463,17 +561,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     node: PidAlignmentRosNode | None = None
+    executor: MultiThreadedExecutor | None = None
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     try:
         cfg = load_pid_alignment_config(Path(args.config))
         node = PidAlignmentRosNode(cfg=cfg)
-        rclpy.spin(node)
+        executor = MultiThreadedExecutor(num_threads=2)
+        executor.add_node(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     except RCLError:
         if rclpy.ok():
             raise
     finally:
+        if executor is not None:
+            executor.shutdown()
         if node is not None:
             node.destroy_node()
         rclpy.try_shutdown()

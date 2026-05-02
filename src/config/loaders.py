@@ -14,6 +14,7 @@ from .models import (
     DetectorConfig,
     ForwardApproachConfig,
     PidAlignmentWorkflowConfig,
+    RuntimeConfig,
     TopicConfig,
 )
 
@@ -28,6 +29,11 @@ def load_pid_alignment_config(
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     payload_mapping = _require_mapping(payload, "config")
     root = _require_mapping_field(payload_mapping, "pid_alignment_workflow")
+    runtime = _optional_mapping_field(
+        root,
+        "runtime",
+        parent="pid_alignment_workflow",
+    )
     topics = _require_mapping_field(root, "topics", parent="pid_alignment_workflow")
     detector = _require_mapping_field(root, "detector", parent="pid_alignment_workflow")
     adapter = _require_mapping_field(root, "adapter", parent="pid_alignment_workflow")
@@ -59,6 +65,29 @@ def load_pid_alignment_config(
         parent="pid_alignment_workflow",
     )
 
+    runtime_config = RuntimeConfig(
+        workflow_hz=_require_positive_defaulted_float_field(
+            runtime,
+            "workflow_hz",
+            default=10.0,
+            parent="pid_alignment_workflow.runtime",
+        ),
+        command_publish_hz=_require_minimum_defaulted_float_field(
+            runtime,
+            "command_publish_hz",
+            default=30.0,
+            minimum=20.0,
+            parent="pid_alignment_workflow.runtime",
+        ),
+        command_timeout_s=_require_positive_defaulted_float_field(
+            runtime,
+            "command_timeout_s",
+            default=0.25,
+            parent="pid_alignment_workflow.runtime",
+        ),
+    )
+    _validate_runtime_config(runtime_config)
+
     return PidAlignmentWorkflowConfig(
         environment=_require_str_field(root, "environment", parent="pid_alignment_workflow"),
         start_phase=start_phase,
@@ -77,6 +106,7 @@ def load_pid_alignment_config(
                 parent="pid_alignment_workflow.status_align",
             )
         ),
+        runtime=runtime_config,
         forward_approach=ForwardApproachConfig(
             speed_mps=_require_positive_defaulted_float_field(
                 forward_approach,
@@ -301,6 +331,34 @@ def _require_positive_defaulted_float_field(
     if value <= 0.0:
         raise ValueError(f"{parent}.{key} must be greater than 0")
     return value
+
+
+def _require_minimum_defaulted_float_field(
+    mapping: dict[str, Any],
+    key: str,
+    *,
+    default: float,
+    minimum: float,
+    parent: str,
+) -> float:
+    value = _require_defaulted_float_field(
+        mapping,
+        key,
+        default=default,
+        parent=parent,
+    )
+    if value < minimum:
+        raise ValueError(f"{parent}.{key} must be >= {minimum:g}")
+    return value
+
+
+def _validate_runtime_config(runtime: RuntimeConfig) -> None:
+    workflow_period_s = 1.0 / runtime.workflow_hz
+    if runtime.command_timeout_s <= workflow_period_s:
+        raise ValueError(
+            "pid_alignment_workflow.runtime.command_timeout_s must be greater "
+            "than one workflow tick period"
+        )
 
 
 def _require_phase_sequence_field(

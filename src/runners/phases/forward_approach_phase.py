@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from runners.phases.heartbeat_stats import filled_heartbeat_frames
 from workflow.phase_runner import PhaseTickResult
 from workflow.types import AlgoStatus, EnvStatus, Phase
 
@@ -98,6 +99,7 @@ def _log_forward_approach_cycle(
             [
                 "forward_approach cycle",
                 f"  phase={Phase.FORWARD_APPROACH.value}",
+                f"  filled_heartbeat_frames={filled_heartbeat_frames(context)}",
                 f"  speed_mps={float(context.cfg.forward_approach.speed_mps):.3f}",
                 f"  distance_m={float(context.cfg.forward_approach.distance_m):.3f}",
                 f"  duration_s={duration_s:.3f}",

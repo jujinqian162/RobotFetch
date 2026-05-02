@@ -76,7 +76,13 @@ class FakeLogger:
         self.warning_messages.append(message)
 
 
-def make_context(*, vision: FakeVisionSession, complete_on_first_target: bool = True):
+def make_context(
+    *,
+    vision: FakeVisionSession,
+    complete_on_first_target: bool = True,
+    filled_heartbeat_frames: int = 0,
+):
+    heartbeat_stats = SimpleNamespace(filled_heartbeat_frames=filled_heartbeat_frames)
     return SimpleNamespace(
         cfg=SimpleNamespace(
             detector=SimpleNamespace(base_coord_profile="base_coord_competition"),
@@ -98,6 +104,7 @@ def make_context(*, vision: FakeVisionSession, complete_on_first_target: bool = 
         ),
         logger=FakeLogger(),
         now_s=lambda: 30.0,
+        consume_heartbeat_stats=lambda: heartbeat_stats,
     )
 
 
@@ -165,13 +172,14 @@ def test_base_coord_log_includes_target_coordinates_and_selected_target():
         frame=object(),
         detection=FakeDetectionBatch(ready=True, targets=[first, second]),
     )
-    context = make_context(vision=vision)
+    context = make_context(vision=vision, filled_heartbeat_frames=14)
     phase = BaseCoordPhaseRunner()
 
     phase.on_enter(context)
     phase.tick(context)
 
     log_message = context.logger.info_messages[-1]
+    assert "  filled_heartbeat_frames=14" in log_message
     assert "  targets=[#1(x=0.120,y=0.340,z=0.560), #2(x=1.230,y=2.340,z=3.450)]" in log_message
     assert "  selected=#1" in log_message
 

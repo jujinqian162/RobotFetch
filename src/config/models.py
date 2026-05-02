@@ -74,6 +74,13 @@ class BaseCoordConfig:
 
 
 @dataclass(frozen=True)
+class RuntimeConfig:
+    workflow_hz: float
+    command_publish_hz: float
+    command_timeout_s: float
+
+
+@dataclass(frozen=True)
 class PidAlignmentWorkflowConfig:
     environment: str
     start_phase: str
@@ -81,6 +88,7 @@ class PidAlignmentWorkflowConfig:
     target_x: float
     tolerance_px: float
     max_speed: float
+    runtime: RuntimeConfig
     forward_approach: ForwardApproachConfig
     base_coord: BaseCoordConfig
     topics: TopicConfig

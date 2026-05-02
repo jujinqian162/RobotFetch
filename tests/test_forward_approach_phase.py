@@ -37,11 +37,12 @@ class FakeLogger:
         self.info_messages.append(message)
 
 
-def make_context(*, now_s: float = 10.0):
+def make_context(*, now_s: float = 10.0, filled_heartbeat_frames: int = 0):
     cfg = SimpleNamespace(
         forward_approach=SimpleNamespace(speed_mps=0.5, distance_m=1.0),
         topics=SimpleNamespace(cmd_topic="/cmd_vel"),
     )
+    heartbeat_stats = SimpleNamespace(filled_heartbeat_frames=filled_heartbeat_frames)
     return SimpleNamespace(
         cfg=cfg,
         resources=VisionForbiddenResources(),
@@ -55,11 +56,12 @@ def make_context(*, now_s: float = 10.0):
         logger=FakeLogger(),
         clock=FakeClock(now_s),
         now_s=lambda: now_s,
+        consume_heartbeat_stats=lambda: heartbeat_stats,
     )
 
 
 def test_forward_approach_publishes_forward_command_without_vision_access():
-    context = make_context(now_s=12.0)
+    context = make_context(now_s=12.0, filled_heartbeat_frames=3)
     phase = ForwardApproachPhaseRunner()
 
     phase.on_enter(context)
@@ -75,6 +77,7 @@ def test_forward_approach_publishes_forward_command_without_vision_access():
     assert context.publishers.algo_status_pub.messages == [AlgoStatus.RUNNING.value]
     assert context.publishers.env_status_pub.messages == [EnvStatus.RUNNING.value]
     assert "forward_approach cycle" in context.logger.info_messages[0]
+    assert "\n  filled_heartbeat_frames=3" in context.logger.info_messages[0]
     assert "\n  linear_x=0.500000" in context.logger.info_messages[0]
 
 

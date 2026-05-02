@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from runners.phases.heartbeat_stats import filled_heartbeat_frames
 from workflow.phase_runner import PhaseTickResult
 from workflow.types import AlgoStatus, EnvStatus, Phase
 
@@ -126,6 +127,7 @@ def _log_base_coord_cycle(
             [
                 "base_coord cycle",
                 f"  phase={Phase.BASE_COORD.value}",
+                f"  filled_heartbeat_frames={filled_heartbeat_frames(context)}",
                 f"  detector_ready={bool(detection.ready)}",
                 f"  target_count={len(targets)}",
                 f"  targets={_format_base_coord_targets(targets)}",

@@ -150,6 +150,10 @@ error_px = status_align.target_x - selected_status_target.cx
 
 - `status_align.target_x`：状态模式下对齐目标像素 x
 - `status_align.max_speed`：状态对齐 PID 的速度输出上限，具体值以当前 workflow YAML 为准
+- `runtime.workflow_hz`：视觉读取、检测和 phase runner 的 workflow tick 频率
+- `runtime.command_publish_hz`：命令 heartbeat 发布频率；必须至少 `20Hz`，用于在两次较慢 workflow tick 之间重复最新命令
+- `runtime.command_timeout_s`：workflow 超过该时长未刷新命令时，heartbeat 发布零速；必须大于一个 workflow tick 周期
+- `filled_heartbeat_frames`：运行日志中每个 phase `cycle` INFO 自带的 heartbeat 补帧数，对应上一个 engine tick 到当前 tick 之间重复发布的最新命令次数
 - `phase_sequence`：本次要执行的阶段序列；单阶段测试可写 `[STATUS_ALIGN]`
 - `forward_approach.speed_mps`：`FORWARD_APPROACH` 阶段的固定前进速度，必须大于 0
 - `forward_approach.distance_m`：`FORWARD_APPROACH` 阶段的固定前进距离，必须大于 0

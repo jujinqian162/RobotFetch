@@ -91,7 +91,8 @@ class FakeLogger:
         self.warning_messages.append(message)
 
 
-def make_context(*, vision: FakeVisionSession):
+def make_context(*, vision: FakeVisionSession, filled_heartbeat_frames: int = 0):
+    heartbeat_stats = SimpleNamespace(filled_heartbeat_frames=filled_heartbeat_frames)
     return SimpleNamespace(
         cfg=SimpleNamespace(
             detector=SimpleNamespace(status_profile="status_competition"),
@@ -112,6 +113,7 @@ def make_context(*, vision: FakeVisionSession):
         ),
         logger=FakeLogger(),
         now_s=lambda: 21.5,
+        consume_heartbeat_stats=lambda: heartbeat_stats,
     )
 
 
@@ -130,7 +132,7 @@ def test_status_align_uses_vision_session_and_status_profile():
             aligned=False,
         )
     )
-    context = make_context(vision=vision)
+    context = make_context(vision=vision, filled_heartbeat_frames=3)
     phase = StatusAlignPhaseRunner(status_align_step=step)
 
     phase.on_enter(context)
@@ -150,6 +152,7 @@ def test_status_align_uses_vision_session_and_status_profile():
     assert context.publishers.selected_target_pub.messages == [
         {"label": "palm", "cx": 300.0, "frame_id": "camera_link"}
     ]
+    assert "\n  filled_heartbeat_frames=3" in context.logger.info_messages[-1]
 
 
 def test_status_align_returns_done_when_step_reports_aligned():

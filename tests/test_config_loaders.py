@@ -222,6 +222,146 @@ pid_alignment_workflow:
     assert transform.invert_angular_z is True
 
 
+def test_load_pid_alignment_config_reads_runtime_heartbeat_fields(tmp_path: Path):
+    config_path = tmp_path / "pid_alignment.runtime.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  runtime:
+    workflow_hz: 8.0
+    command_publish_hz: 30.0
+    command_timeout_s: 0.25
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_pid_alignment_config(config_path)
+
+    assert cfg.runtime.workflow_hz == 8.0
+    assert cfg.runtime.command_publish_hz == 30.0
+    assert cfg.runtime.command_timeout_s == 0.25
+
+
+def test_load_pid_alignment_config_defaults_runtime_fields(tmp_path: Path):
+    config_path = tmp_path / "pid_alignment.runtime_defaults.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_pid_alignment_config(config_path)
+
+    assert cfg.runtime.workflow_hz == 10.0
+    assert cfg.runtime.command_publish_hz == 30.0
+    assert cfg.runtime.command_timeout_s == 0.25
+
+
+def test_load_pid_alignment_config_rejects_command_publish_hz_below_20(
+    tmp_path: Path,
+):
+    config_path = tmp_path / "pid_alignment.runtime_low_hz.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  runtime:
+    command_publish_hz: 19.0
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="runtime.command_publish_hz"):
+        load_pid_alignment_config(config_path)
+
+
+def test_load_pid_alignment_config_rejects_command_timeout_at_or_below_workflow_period(
+    tmp_path: Path,
+):
+    config_path = tmp_path / "pid_alignment.runtime_short_timeout.yaml"
+    config_path.write_text(
+        """
+pid_alignment_workflow:
+  environment: robot
+  start_phase: STATUS_ALIGN
+  runtime:
+    workflow_hz: 10.0
+    command_publish_hz: 30.0
+    command_timeout_s: 0.1
+  detector:
+    sdk_config: BaseDetect/configs/basedetect_sdk.yaml
+    status_profile: status_competition
+    input_source: "0"
+  topics:
+    cmd_topic: /cmd_vel
+    workflow_phase_topic: /workflow/phase
+    algo_status_topic: /workflow/algo_status
+    env_status_topic: /workflow/env_status
+    selected_status_topic: /robot_fetch/selected_target_px
+  adapter:
+    turtle_cmd_topic: null
+  status_align:
+    target_x: 320.0
+    tolerance_px: 8.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="runtime.command_timeout_s"):
+        load_pid_alignment_config(config_path)
+
+
 def test_load_pid_alignment_config_reads_base_coord_fields(tmp_path: Path):
     config_path = tmp_path / "pid_alignment.base_coord.yaml"
     config_path.write_text(

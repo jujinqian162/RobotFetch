@@ -15,6 +15,7 @@ from config.models import (
     DetectorConfig,
     ForwardApproachConfig,
     PidAlignmentWorkflowConfig,
+    RuntimeConfig,
     TopicConfig,
 )
 from workflow.types import AlgoStatus, Phase
@@ -45,6 +46,11 @@ def make_cfg(
         target_x=320.0,
         tolerance_px=8.0,
         max_speed=max_speed,
+        runtime=RuntimeConfig(
+            workflow_hz=10.0,
+            command_publish_hz=30.0,
+            command_timeout_s=0.25,
+        ),
         forward_approach=ForwardApproachConfig(speed_mps=0.12, distance_m=0.3),
         topics=TopicConfig(
             cmd_topic=resolved_cmd_topic,
@@ -94,6 +100,13 @@ def import_with_fake_ros(monkeypatch):
 
             return SimpleNamespace(info=info, warning=warning)
 
+        def create_timer(self, period_s, callback, callback_group=None):
+            return SimpleNamespace(
+                period_s=period_s,
+                callback=callback,
+                callback_group=callback_group,
+            )
+
     class FakeString:
         def __init__(self) -> None:
             self.data = ""
@@ -115,11 +128,33 @@ def import_with_fake_ros(monkeypatch):
     fake_rclpy = types.ModuleType("rclpy")
     fake_rclpy.init = lambda: None
     fake_rclpy.shutdown = lambda: None
-    fake_rclpy.try_shutdown = lambda: None
+    fake_rclpy.try_shutdown = lambda **kwargs: None
     fake_rclpy.spin = lambda node: None
+    fake_rclpy.ok = lambda: True
 
     fake_rclpy_node = types.ModuleType("rclpy.node")
     fake_rclpy_node.Node = FakeNode
+
+    fake_callback_groups = types.ModuleType("rclpy.callback_groups")
+    fake_callback_groups.MutuallyExclusiveCallbackGroup = lambda: object()
+
+    class FakeMultiThreadedExecutor:
+        def __init__(self, *, num_threads: int) -> None:
+            self.num_threads = num_threads
+            self.nodes: list[object] = []
+            self.spin_called = False
+
+        def add_node(self, node: object) -> None:
+            self.nodes.append(node)
+
+        def spin(self) -> None:
+            self.spin_called = True
+
+        def shutdown(self) -> None:
+            return None
+
+    fake_executors = types.ModuleType("rclpy.executors")
+    fake_executors.MultiThreadedExecutor = FakeMultiThreadedExecutor
 
     fake_geometry = types.ModuleType("geometry_msgs")
     fake_geometry_msg = types.ModuleType("geometry_msgs.msg")
@@ -133,6 +168,8 @@ def import_with_fake_ros(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "rclpy", fake_rclpy)
     monkeypatch.setitem(sys.modules, "rclpy.node", fake_rclpy_node)
+    monkeypatch.setitem(sys.modules, "rclpy.callback_groups", fake_callback_groups)
+    monkeypatch.setitem(sys.modules, "rclpy.executors", fake_executors)
     monkeypatch.setitem(sys.modules, "geometry_msgs", fake_geometry)
     monkeypatch.setitem(sys.modules, "geometry_msgs.msg", fake_geometry_msg)
     monkeypatch.setitem(sys.modules, "std_msgs", fake_std)
@@ -272,7 +309,9 @@ def test_build_capture_log_message_reports_video_properties(monkeypatch):
     )
 
 
-def test_on_timer_calls_workflow_engine_tick_and_stops_on_terminal_result(monkeypatch):
+def test_on_workflow_timer_calls_workflow_engine_tick_and_stops_on_terminal_result(
+    monkeypatch,
+):
     calls: list[str] = []
     shutdown_calls: list[object] = []
 
@@ -303,11 +342,21 @@ def test_on_timer_calls_workflow_engine_tick_and_stops_on_terminal_result(monkey
     node._engine = FakeEngine()
     node._logger = FakeLogger()
     node.get_logger = lambda: node._logger
+    node._command_buffer = SimpleNamespace(
+        request_stop=lambda **kwargs: None,
+        consume_workflow_cycle_stats=lambda: SimpleNamespace(
+            filled_heartbeat_frames=0,
+            command_age_s=None,
+            stop_requested=False,
+            stop_reason=None,
+        )
+    )
+    node._command_output = SimpleNamespace(publish=lambda payload: None)
     node._is_ros_context_ok = lambda: True
     node.destroyed = False
     node.destroy_node = lambda: setattr(node, "destroyed", True) or True
 
-    node._on_timer()
+    node._on_workflow_timer()
 
     assert calls == ["tick"]
     assert node.destroyed is True
@@ -350,7 +399,11 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
     monkeypatch.setattr(
         fake_ros_node.PidAlignmentRosNode,
         "create_timer",
-        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        lambda self, period_s, callback, callback_group=None: SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        ),
         raising=False,
     )
     monkeypatch.setattr(fake_ros_node, "build_capture", lambda input_source: FakeCapture())
@@ -400,7 +453,10 @@ def test_pid_alignment_ros_node_does_not_route_adapter_env_status_to_topic(monke
             "  target_x=320.000\n"
             "  tolerance_px=8.000\n"
             "  forward_approach_speed_mps=0.120\n"
-            "  forward_approach_distance_m=0.300"
+            "  forward_approach_distance_m=0.300\n"
+            "  workflow_hz=10.000\n"
+            "  command_publish_hz=30.000\n"
+            "  command_timeout_s=0.250"
         ),
     ]
 
@@ -431,7 +487,11 @@ def test_pid_alignment_ros_node_builds_engine_without_opening_capture_or_detecto
     monkeypatch.setattr(
         fake_ros_node.PidAlignmentRosNode,
         "create_timer",
-        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        lambda self, period_s, callback, callback_group=None: SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        ),
         raising=False,
     )
 
@@ -485,9 +545,163 @@ def test_pid_alignment_ros_node_builds_engine_without_opening_capture_or_detecto
             "  target_x=320.000\n"
             "  tolerance_px=8.000\n"
             "  forward_approach_speed_mps=0.120\n"
-            "  forward_approach_distance_m=0.300"
+            "  forward_approach_distance_m=0.300\n"
+            "  workflow_hz=10.000\n"
+            "  command_publish_hz=30.000\n"
+            "  command_timeout_s=0.250"
         ),
     ]
+
+
+def test_pid_alignment_ros_node_uses_separate_workflow_and_command_timers(monkeypatch):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+    timers: list[object] = []
+
+    class FakeRosPublisher:
+        def publish(self, message: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        lambda self, msg_type, topic, qos_depth: FakeRosPublisher(),
+        raising=False,
+    )
+
+    def fake_create_timer(self, period_s, callback, callback_group=None):
+        timer = SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        )
+        timers.append(timer)
+        return timer
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_timer",
+        fake_create_timer,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node,
+        "build_adapter",
+        lambda **kwargs: SimpleNamespace(
+            on_cmd_vel=lambda message: None,
+            on_phase=lambda phase: None,
+        ),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(cfg=make_cfg(environment="robot"))
+
+    assert node._workflow_timer.period_s == 0.1
+    assert round(node._command_timer.period_s, 6) == round(1.0 / 30.0, 6)
+    assert len(timers) == 2
+    assert timers[0].callback_group is not timers[1].callback_group
+
+
+def test_runner_cmd_updates_buffer_until_heartbeat_publishes(monkeypatch):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+    publishers: dict[str, object] = {}
+
+    class FakeRosPublisher:
+        def __init__(self, topic: str, msg_type: type[object]) -> None:
+            self.topic = topic
+            self.msg_type = msg_type
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    def fake_create_publisher(self, msg_type, topic, qos_depth):
+        publisher = FakeRosPublisher(topic=topic, msg_type=msg_type)
+        publishers[topic] = publisher
+        return publisher
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        fake_create_publisher,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_timer",
+        lambda self, period_s, callback, callback_group=None: SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node,
+        "build_adapter",
+        lambda **kwargs: SimpleNamespace(
+            on_cmd_vel=lambda message: None,
+            on_phase=lambda phase: None,
+        ),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(cfg=make_cfg(environment="robot"))
+    node.cmd_pub.publish({"linear_x": 0.1, "linear_y": -0.2, "angular_z": 0.3})
+
+    assert publishers["/t0x0101_robotfetch"].messages == []
+
+    node._on_command_timer()
+
+    assert len(publishers["/t0x0101_robotfetch"].messages) == 1
+    assert publishers["/t0x0101_robotfetch"].messages[0].data == [0.1, -0.2, 0.3]
+
+
+def test_stop_request_publishes_zero_without_waiting_for_timeout(monkeypatch):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+    publishers: dict[str, object] = {}
+
+    class FakeRosPublisher:
+        def __init__(self, topic: str) -> None:
+            self.topic = topic
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    def fake_create_publisher(self, msg_type, topic, qos_depth):
+        publisher = FakeRosPublisher(topic)
+        publishers[topic] = publisher
+        return publisher
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        fake_create_publisher,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_timer",
+        lambda self, period_s, callback, callback_group=None: SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node,
+        "build_adapter",
+        lambda **kwargs: SimpleNamespace(
+            on_cmd_vel=lambda message: None,
+            on_phase=lambda phase: None,
+        ),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(cfg=make_cfg(environment="robot"))
+    node.cmd_pub.publish({"linear_x": 0.0, "linear_y": 0.2, "angular_z": 0.0})
+    node._command_buffer.request_stop(reason="test_stop")
+    node._on_command_timer()
+
+    assert publishers["/t0x0101_robotfetch"].messages[0].data == [0.0, 0.0, 0.0]
 
 
 def test_pid_alignment_ros_node_publishes_robot_cmd_as_float32_multi_array(monkeypatch):
@@ -517,7 +731,11 @@ def test_pid_alignment_ros_node_publishes_robot_cmd_as_float32_multi_array(monke
     monkeypatch.setattr(
         fake_ros_node.PidAlignmentRosNode,
         "create_timer",
-        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        lambda self, period_s, callback, callback_group=None: SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        ),
         raising=False,
     )
     monkeypatch.setattr(
@@ -537,6 +755,8 @@ def test_pid_alignment_ros_node_publishes_robot_cmd_as_float32_multi_array(monke
 
     publisher = publishers["/t0x0101_robotfetch"]
     assert publisher.msg_type.__name__ == "FakeFloat32MultiArray"
+    assert len(publisher.messages) == 0
+    node._on_command_timer()
     assert len(publisher.messages) == 1
     assert publisher.messages[0].data == [0.1, -0.2, 0.3]
 
@@ -574,7 +794,11 @@ def test_pid_alignment_ros_node_bridges_runner_cmd_to_turtle_topic(monkeypatch):
     monkeypatch.setattr(
         fake_ros_node.PidAlignmentRosNode,
         "create_timer",
-        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        lambda self, period_s, callback, callback_group=None: SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        ),
         raising=False,
     )
     monkeypatch.setattr(fake_ros_node, "build_capture", lambda input_source: FakeCapture())
@@ -602,6 +826,10 @@ def test_pid_alignment_ros_node_bridges_runner_cmd_to_turtle_topic(monkeypatch):
 
     raw_messages = publishers["/cmd_vel"].messages
     turtle_messages = publishers["/turtle1/cmd_vel"].messages
+
+    assert len(raw_messages) == 0
+    assert len(turtle_messages) == 0
+    node._on_command_timer()
 
     assert len(raw_messages) == 1
     assert raw_messages[0].linear.x == 0.0
@@ -642,7 +870,11 @@ def test_pid_alignment_ros_node_applies_cmd_vel_transform_before_turtle_bridge(
     monkeypatch.setattr(
         fake_ros_node.PidAlignmentRosNode,
         "create_timer",
-        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        lambda self, period_s, callback, callback_group=None: SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        ),
         raising=False,
     )
 
@@ -666,6 +898,10 @@ def test_pid_alignment_ros_node_applies_cmd_vel_transform_before_turtle_bridge(
 
     raw_messages = publishers["/cmd_vel"].messages
     turtle_messages = publishers["/turtle1/cmd_vel"].messages
+
+    assert len(raw_messages) == 0
+    assert len(turtle_messages) == 0
+    node._on_command_timer()
 
     assert len(raw_messages) == 1
     assert raw_messages[0].linear.x == -0.1
@@ -711,7 +947,11 @@ def test_pid_alignment_ros_node_can_disable_workflow_cmd_vel_publish(monkeypatch
     monkeypatch.setattr(
         fake_ros_node.PidAlignmentRosNode,
         "create_timer",
-        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        lambda self, period_s, callback, callback_group=None: SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        ),
         raising=False,
     )
     monkeypatch.setattr(fake_ros_node, "build_capture", lambda input_source: FakeCapture())
@@ -740,6 +980,8 @@ def test_pid_alignment_ros_node_can_disable_workflow_cmd_vel_publish(monkeypatch
     )
 
     assert "/cmd_vel" not in publishers
+    assert len(publishers["/turtle1/cmd_vel"].messages) == 0
+    node._on_command_timer()
     assert len(publishers["/turtle1/cmd_vel"].messages) == 1
 
 
@@ -771,7 +1013,11 @@ def test_pid_alignment_ros_node_applies_cmd_vel_transform_when_workflow_publish_
     monkeypatch.setattr(
         fake_ros_node.PidAlignmentRosNode,
         "create_timer",
-        lambda self, period_s, callback: SimpleNamespace(period_s=period_s, callback=callback),
+        lambda self, period_s, callback, callback_group=None: SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        ),
         raising=False,
     )
 
@@ -795,9 +1041,228 @@ def test_pid_alignment_ros_node_applies_cmd_vel_transform_when_workflow_publish_
     )
 
     assert "/cmd_vel" not in publishers
+    assert len(publishers["/turtle1/cmd_vel"].messages) == 0
+    node._on_command_timer()
     assert len(publishers["/turtle1/cmd_vel"].messages) == 1
     assert publishers["/turtle1/cmd_vel"].messages[0].linear.x == -0.18
     assert publishers["/turtle1/cmd_vel"].messages[0].angular.z == -0.25
+
+
+def test_engine_stop_requests_command_stop_before_shutdown(monkeypatch):
+    stop_reasons: list[str] = []
+    output_payloads: list[dict[str, float]] = []
+    shutdown_calls: list[object] = []
+
+    class FakeCommandBuffer:
+        def request_stop(self, *, reason: str) -> None:
+            stop_reasons.append(reason)
+
+    class FakeCommandOutput:
+        def publish(self, payload: dict[str, float]) -> None:
+            output_payloads.append(payload)
+
+    monkeypatch.setattr(
+        ros_node.rclpy,
+        "try_shutdown",
+        lambda **kwargs: shutdown_calls.append(kwargs),
+    )
+
+    class FakeLogger:
+        def __init__(self) -> None:
+            self.info_messages: list[str] = []
+
+        def info(self, message: str) -> None:
+            self.info_messages.append(message)
+
+    node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
+    node._command_buffer = FakeCommandBuffer()
+    node._command_output = FakeCommandOutput()
+    node._logger = FakeLogger()
+    node.get_logger = lambda: node._logger
+    node.destroy_node = lambda: True
+
+    node._handle_engine_stop_if_requested(
+        SimpleNamespace(
+            stop_reason="phase_sequence_complete",
+            phase=Phase.STATUS_ALIGN,
+            algo_status=AlgoStatus.ALIGNED,
+        )
+    )
+
+    assert stop_reasons == ["phase_sequence_complete"]
+    assert output_payloads == [{"linear_x": 0.0, "linear_y": 0.0, "angular_z": 0.0}]
+    assert shutdown_calls == [{}]
+
+
+def test_workflow_timer_does_not_emit_standalone_heartbeat_summary(monkeypatch):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+
+    class FakeLogger:
+        def __init__(self) -> None:
+            self.info_messages: list[str] = []
+            self.warning_messages: list[str] = []
+
+        def info(self, message: str) -> None:
+            self.info_messages.append(message)
+
+        def warning(self, message: str) -> None:
+            self.warning_messages.append(message)
+
+    class FakeCommandBuffer:
+        def consume_workflow_cycle_stats(self):
+            raise AssertionError("phase cycle logs should consume heartbeat stats")
+
+    node = fake_ros_node.PidAlignmentRosNode.__new__(fake_ros_node.PidAlignmentRosNode)
+    node._logger = FakeLogger()
+    node.get_logger = lambda: node._logger
+    node._engine = SimpleNamespace(tick=lambda: SimpleNamespace(stop_reason=None))
+    node._command_buffer = FakeCommandBuffer()
+    node._handle_engine_stop_if_requested = lambda result: None
+
+    node._on_workflow_timer()
+
+    assert node._logger.info_messages == []
+
+
+def test_node_context_exposes_heartbeat_stats_for_phase_cycle_logs(monkeypatch):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+
+    class FakeRosPublisher:
+        def __init__(self, topic: str) -> None:
+            self.topic = topic
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        lambda self, msg_type, topic, qos_depth: FakeRosPublisher(topic),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_timer",
+        lambda self, period_s, callback, callback_group=None: SimpleNamespace(
+            period_s=period_s,
+            callback=callback,
+            callback_group=callback_group,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node,
+        "build_adapter",
+        lambda **kwargs: SimpleNamespace(
+            on_cmd_vel=lambda message: None,
+            on_phase=lambda phase: None,
+        ),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(cfg=make_cfg(environment="robot"))
+    node.cmd_pub.publish({"linear_x": 0.0, "linear_y": 0.2, "angular_z": 0.0})
+    node._command_buffer.snapshot_for_heartbeat(timeout_s=0.25)
+    node._command_buffer.snapshot_for_heartbeat(timeout_s=0.25)
+    node._command_buffer.snapshot_for_heartbeat(timeout_s=0.25)
+
+    assert node._workflow_context.consume_heartbeat_stats().filled_heartbeat_frames == 3
+    assert node._workflow_context.consume_heartbeat_stats().filled_heartbeat_frames == 0
+
+
+def test_command_timer_skips_after_destroy_without_publishing(monkeypatch):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+
+    class FakeCommandBuffer:
+        def snapshot_for_heartbeat(self, *, timeout_s: float):
+            raise AssertionError("destroyed timer must not snapshot commands")
+
+    class FakeCommandOutput:
+        def publish(self, payload: dict[str, float]) -> None:
+            raise AssertionError("destroyed timer must not publish")
+
+    node = fake_ros_node.PidAlignmentRosNode.__new__(fake_ros_node.PidAlignmentRosNode)
+    node._destroyed = True
+    node._command_buffer = FakeCommandBuffer()
+    node._command_output = FakeCommandOutput()
+    node._cfg = make_cfg(environment="robot")
+
+    node._on_command_timer()
+
+
+def test_command_timer_suppresses_rclerror_when_ros_context_is_down(monkeypatch):
+    ok_calls = iter([True, False])
+    monkeypatch.setattr(ros_node.rclpy, "ok", lambda: next(ok_calls))
+
+    class FakeCommandBuffer:
+        def snapshot_for_heartbeat(self, *, timeout_s: float):
+            return SimpleNamespace(command={"linear_x": 0.0, "linear_y": 0.2, "angular_z": 0.0})
+
+    class FakeCommandOutput:
+        def publish(self, payload: dict[str, float]) -> None:
+            raise ros_node.RCLError("context is not valid")
+
+    node = ros_node.PidAlignmentRosNode.__new__(ros_node.PidAlignmentRosNode)
+    node._destroyed = False
+    node._cfg = make_cfg(environment="robot")
+    node._last_command_publish_monotonic_s = None
+    node._command_buffer = FakeCommandBuffer()
+    node._command_output = FakeCommandOutput()
+    node.get_logger = lambda: SimpleNamespace(warning=lambda message: None)
+
+    node._on_command_timer()
+
+
+def test_engine_stop_publishes_single_zero_when_destroy_node_runs(monkeypatch):
+    fake_ros_node = import_with_fake_ros(monkeypatch)
+    publishers: dict[str, object] = {}
+    shutdown_calls: list[object] = []
+
+    class FakeRosPublisher:
+        def __init__(self, topic: str) -> None:
+            self.topic = topic
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    def fake_create_publisher(self, msg_type, topic, qos_depth):
+        publisher = FakeRosPublisher(topic)
+        publishers[topic] = publisher
+        return publisher
+
+    monkeypatch.setattr(
+        fake_ros_node.PidAlignmentRosNode,
+        "create_publisher",
+        fake_create_publisher,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        fake_ros_node,
+        "build_adapter",
+        lambda **kwargs: SimpleNamespace(on_cmd_vel=lambda message: None, on_phase=lambda phase: None),
+    )
+    monkeypatch.setattr(
+        fake_ros_node.rclpy,
+        "try_shutdown",
+        lambda **kwargs: shutdown_calls.append(kwargs),
+    )
+
+    node = fake_ros_node.PidAlignmentRosNode(cfg=make_cfg(environment="robot"))
+    node.cmd_pub.publish({"linear_x": 0.0, "linear_y": 0.2, "angular_z": 0.0})
+
+    node._handle_engine_stop_if_requested(
+        SimpleNamespace(
+            stop_reason="phase_sequence_complete",
+            phase=Phase.STATUS_ALIGN,
+            algo_status=AlgoStatus.ALIGNED,
+        )
+    )
+
+    robot_messages = publishers["/t0x0101_robotfetch"].messages
+    assert len(robot_messages) == 1
+    assert robot_messages[0].data == [0.0, 0.0, 0.0]
+    assert shutdown_calls == [{}]
 
 
 def test_parse_args_defaults_config_path_from_worktree_root():
@@ -820,6 +1285,7 @@ def test_main_loads_config_and_spins_node(monkeypatch):
     calls: list[tuple[str, object]] = []
     fake_cfg = make_cfg(environment="robot")
     created_nodes: list[object] = []
+    created_executors: list[object] = []
 
     monkeypatch.setattr(
         ros_node.rclpy,
@@ -832,15 +1298,26 @@ def test_main_loads_config_and_spins_node(monkeypatch):
         lambda: calls.append(("try_shutdown", None)),
     )
     monkeypatch.setattr(
-        ros_node.rclpy,
-        "spin",
-        lambda node: calls.append(("spin", node)),
-    )
-    monkeypatch.setattr(
         ros_node,
         "load_pid_alignment_config",
         lambda path: calls.append(("load", Path(path))) or fake_cfg,
     )
+
+    class FakeExecutor:
+        def __init__(self, *, num_threads: int):
+            calls.append(("executor_init", num_threads))
+            created_executors.append(self)
+
+        def add_node(self, node):
+            calls.append(("add_node", node))
+
+        def spin(self):
+            calls.append(("spin", None))
+
+        def shutdown(self):
+            calls.append(("executor_shutdown", None))
+
+    monkeypatch.setattr(ros_node, "MultiThreadedExecutor", FakeExecutor)
 
     class FakePidAlignmentRosNode:
         def __init__(self, *, cfg):
@@ -859,7 +1336,10 @@ def test_main_loads_config_and_spins_node(monkeypatch):
         ("init", {"signal_handler_options": ros_node.SignalHandlerOptions.NO}),
         ("load", Path("configs/workflows/pid_alignment.turtle.yaml")),
         ("node_init", fake_cfg),
-        ("spin", created_nodes[0]),
+        ("executor_init", 2),
+        ("add_node", created_nodes[0]),
+        ("spin", None),
+        ("executor_shutdown", None),
         ("destroy", None),
         ("try_shutdown", None),
     ]
@@ -868,6 +1348,7 @@ def test_main_loads_config_and_spins_node(monkeypatch):
 def test_main_handles_keyboard_interrupt_without_traceback(monkeypatch):
     calls: list[tuple[str, object]] = []
     fake_cfg = make_cfg(environment="robot")
+    created_nodes: list[object] = []
 
     monkeypatch.setattr(
         ros_node.rclpy,
@@ -880,19 +1361,30 @@ def test_main_handles_keyboard_interrupt_without_traceback(monkeypatch):
         lambda: calls.append(("try_shutdown", None)),
     )
     monkeypatch.setattr(
-        ros_node.rclpy,
-        "spin",
-        lambda node: (_ for _ in ()).throw(KeyboardInterrupt()),
-    )
-    monkeypatch.setattr(
         ros_node,
         "load_pid_alignment_config",
         lambda path: calls.append(("load", Path(path))) or fake_cfg,
     )
 
+    class FakeExecutor:
+        def __init__(self, *, num_threads: int):
+            calls.append(("executor_init", num_threads))
+
+        def add_node(self, node):
+            calls.append(("add_node", node))
+
+        def spin(self):
+            raise KeyboardInterrupt()
+
+        def shutdown(self):
+            calls.append(("executor_shutdown", None))
+
+    monkeypatch.setattr(ros_node, "MultiThreadedExecutor", FakeExecutor)
+
     class FakePidAlignmentRosNode:
         def __init__(self, *, cfg):
             calls.append(("node_init", cfg))
+            created_nodes.append(self)
 
         def destroy_node(self):
             calls.append(("destroy", None))
@@ -906,6 +1398,9 @@ def test_main_handles_keyboard_interrupt_without_traceback(monkeypatch):
         ("init", {"signal_handler_options": ros_node.SignalHandlerOptions.NO}),
         ("load", Path("configs/workflows/pid_alignment.robot.yaml")),
         ("node_init", fake_cfg),
+        ("executor_init", 2),
+        ("add_node", created_nodes[0]),
+        ("executor_shutdown", None),
         ("destroy", None),
         ("try_shutdown", None),
     ]
@@ -940,6 +1435,13 @@ def test_main_handles_rclpy_context_shutdown_during_interrupt(monkeypatch):
             )
 
     monkeypatch.setattr(ros_node, "PidAlignmentRosNode", FakePidAlignmentRosNode)
+    monkeypatch.setattr(
+        ros_node,
+        "MultiThreadedExecutor",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("executor must not be created")
+        ),
+    )
 
     ros_node.main(["--config", "configs/workflows/pid_alignment.robot.yaml"])
 

@@ -7,6 +7,16 @@ pid_alignment_workflow:
   # First phase to enter when this unified workflow node starts.
   start_phase: FORWARD_APPROACH
 
+  runtime:
+    # Vision/PID workflow tick. This can run slower than the command heartbeat.
+    workflow_hz: 10.0
+
+    # Command heartbeat target. Keep above 20Hz to preserve margin on real hardware.
+    command_publish_hz: 30.0
+
+    # If workflow does not refresh a command before this age, heartbeat publishes zero.
+    command_timeout_s: 0.25
+
   # Ordered mission/action phases for this run.
   # This file intentionally runs only FORWARD_APPROACH, so it must not open vision resources.
   phase_sequence: [FORWARD_APPROACH]
